@@ -192,7 +192,7 @@ static uint8_t cc_read( uint8_t addr ) {
 
   spi_assert();
 
-  while( SPI_PORT & ( 1 << SPI_MISO ) );
+  while( spi_check_miso() );
 
   spi_send( addr | CC_READ );
   data = spi_send( 0 );
@@ -207,7 +207,7 @@ static uint8_t cc_write(uint8_t addr, uint8_t b) {
 
   spi_assert();
 
-  while (SPI_PORT & (1 << SPI_MISO));
+  while( spi_check_miso() );
 
   spi_send(addr);
   result = spi_send(b);
@@ -256,7 +256,7 @@ static uint8_t cc_read_fifo(uint8_t *buffer, uint8_t readAll)
     }
   }
 
-  while (SPI_PORT & (1 << SPI_MISO));
+  while( spi_check_miso() );
   spi_deassert();
 
   return nByte;  
