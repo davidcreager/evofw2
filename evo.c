@@ -3,6 +3,7 @@
 #include "config.h"
 #include "bitstream.h"
 #include "tty.h"
+#include "spi.h"
 #include "cc1101.h"
 #include "led.h"
 #include "transcoder.h"
@@ -18,6 +19,8 @@ void main_init(void) {
 #endif
 
   // Wire up components
+  spi_init();
+  
   transcoder_init(&tty_write_str, 0);//&driver_send_byte);
   bs_init();
   tty_init(&transcoder_accept_outbound_byte);
