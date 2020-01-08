@@ -1,3 +1,12 @@
+/*********************************************************
+*
+* cc1101.h
+* ========
+*
+* Hardware interface to TI CC1101 radio chip
+*
+*/
+
 #ifndef _CC1101_H_
 #define _CC1101_H_
 
