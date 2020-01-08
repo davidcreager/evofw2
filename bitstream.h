@@ -7,6 +7,8 @@
 #ifndef _BITSTREAM_H_
 #define _BITSTREAM_H_
 
+extern uint16_t bs_sync_word(void);
+
 // Return values from bs_accept_octet
 enum bs_accept_octet_codes {
   BS_NOT_SYNCHRONISED = 0,

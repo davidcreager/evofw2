@@ -100,26 +100,30 @@
 *               ><                 50 bits                        ><
 *      0101010101011111111100000000010110011001010101010101100101010xxxxxxxx10xxxxxxxx1
 *      s<  AA  >ps<  FF  >ps<  00  >ps<  CC  >ps<  AA  >ps<  CA  >ps<  MM  >ps<  mm  >p
-*   N x 10101010 ><  SYNC1/0     ><          EVO_SYNCH           >< Evo message
-*                ><  16 bits     ><          32 bits             ><   8  ><  8   >< ...
-*      preamble  ><  0xFF 0x80   ><     0x2C 0xCA 0xAA 0xCA      >
+*    N x 01010101 >1<  SYNC1/0     ><          EVO_SYNCH           >< Evo message
+*                 >1<  16 bits     ><          32 bits             ><   8  ><  8   >< ...
+*       preamble  >1<  0xFE 0x00   ><     0xB3 0x2A 0xAB 0x2A      >
 *
 *  NOTES:
-*   SYNC begins with what is the first data bit of the FF byte
-*        the corresponding start bit is left as part of [bit synch pattern]
+*   SYNC      Contains maximal 0 run
+*             Least likey pattern to be incorrectly detected
+*             Important if we cannot use preamble qualification for SYNC WORD
+*             This is the latest 16 bits we can use for EVO SYNCH to be 32 bits
 *   EVO_SYNCH is the 32 bits that immediately follow SYNC1/0
-*             including the last 2 data bits of 0x00 but
-*             excluding the stop bit of 0xCA
 *             32 bits means that exactly 4 octets are occupied
-*   The first octet following EVO_SYNCH will be of the form psBBBBBB
+*             We have the option to check or just discard these octets
+*             Checking allows us to discard non-evo packets
 *
-*   These values are consistent with the required TX behaviour
+*   The first octet following EVO_SYNCH will be of the form BBBBBBBB (rxBits=0)
+*
 */
 
-#define CC1101_SYNC 0xFF80     /* 1111 1111 1000 0000 */
-#define EVO_SYNCH   0x2CCAAACA /* 0010 1100 1100 1010 1010 1010 1100 1010 */
+#define CC1101_SYNC 0xFE00     /* 1111 1110 0000 0000 */
+#define EVO_SYNCH   0xB32AAB2A /* 1011 0011 0010 1010 1010 1011 0010 1010 */
 #define EVO_EOF     0xAC       /* 1010 1100 */
 #define BIT_TRAIN   0xAA       /* 1010 1010 */
+
+#define RX_BITS 0
 
 static uint8_t evo_header[4];
 
@@ -264,7 +268,7 @@ union shift_register {
 *
 * Which cycle and the starting point in the cycle depends on
 * the alignment of the Evo Header within the delivered bytes
-* If CC1101 is correctly configured this should always be type 8
+* If CC1101 is correctly configured this should always be type 0
 *
 * The synchronised nature of the received bitstream means the
 * structure of the next octet to be received is always known
@@ -411,14 +415,7 @@ uint16_t bs_accept_octet( uint8_t bits ) {
 
       if( synchronised ) { // Found it!
         // Now work out what state the next byte represents
-        // Start by assuming we used all the bits of the last octet
-        rxBits = 8;
-        while( mask ) { // Logically process any remaining bits
-          // Cycle the state for each bit we haven't consumed
-          // This includes stop/start bits to be discarded
-          rxBits = ( rxBits + 1 ) % 10;
-          mask >>= 1;
-        }
+        rxBits = RX_BITS;	// Determined by value of SYNC WORD
 
         // Any remaining bits are already correctly aligned for .data
         // Any bits we've processed or logically discarded will

@@ -31,10 +31,8 @@ static const uint8_t PROGMEM CC_REGISTER_VALUES[] = {
   CC1100_IOCFG0, 0x06,  // GDO0- Frame interrupt
   
   CC1100_FIFOTHR,  0x00, // 
-  CC1100_SYNC1,    0xFF, // SYNC WORD   1111 1111[1] [0]0000 00
-  CC1100_SYNC0,    0x80, //
   CC1100_PKTLEN,   0xFF, //
-  CC1100_PKTCTRL1, 0x80, //
+  CC1100_PKTCTRL1, 0x00, //
   CC1100_PKTCTRL0, 0x02, //
 
   CC1100_FSCTRL1, 0x06,  //
@@ -487,6 +485,11 @@ void cc_init(void) {
     cc_write(reg, val);
   }
 
+  // Configure the SYNC WORD required by bitstream 
+  uint16_t syncWord = bs_sync_word();
+  cc_write( CC1100_SYNC1, ( syncWord>>8 ) & 0xff );
+  cc_write( CC1100_SYNC0, ( syncWord    ) & 0xff );
+  
   cc_enter_rx_mode();
 }
 
