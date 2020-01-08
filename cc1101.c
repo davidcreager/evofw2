@@ -78,9 +78,6 @@ static const uint8_t PROGMEM CC_REGISTER_VALUES[] = {
 #define RS_CHANGE_TO_TX  2
 #define RS_CHANGE_TO_RX  3
 
-static accept_bit_fn accept_bit;
-static request_bit_fn request_bit;
-
 static volatile uint8_t radio_state;
 
 enum frame_state {
@@ -165,8 +162,6 @@ static uint8_t cc_read_fifo(uint8_t *buffer, uint8_t readAll)
   return nByte;  
 }
 
-
-#if defined(USE_FIFO)
 
 #define INT_MASK  ( FRAME_INT | FIFO_INT )
 
@@ -431,45 +426,6 @@ uint8_t cc_put_octet( uint8_t octet ) { // Transfer to FIFO
   return 1;
 }
 
-#else
-
-static void receive_bit(void) {
-  uint8_t bit = (GDO0_DATA_IN >> GDO0_DATA_PIN) & 1;
-  if (accept_bit(bit) != 0) {
-    // Non-0 is a request to switch to transmit mode. This is called from interrupt
-    // handlers. Actual switch is delayed until main loop.
-    radio_state = RS_CHANGE_TO_TX;
-  }
-}
-
-static void send_bit(void) {
-  uint8_t bit = request_bit();
-
-  // If something other than 0 or 1 is returned, switch to receive mode. The radio
-  // will clock in whatever was set on the data pin last, and will transmit noise,
-  // but that doesn't matter.
-  if (bit == 0) {
-    GDO0_DATA_PORT &= ~(1 << GDO0_DATA_PIN);
-  } else if (bit == 1) {
-    GDO0_DATA_PORT |= (1 << GDO0_DATA_PIN);
-  } else {
-    // This is called from interrupt handlers. Actual switch is delayed until main loop.
-    radio_state = RS_CHANGE_TO_RX;
-  }
-}
-
-#define INT_MASK (1 << GDO2_CLK_INT)
-
-ISR(GDO2_CLK_INTVECT) {
-  if (radio_state == RS_RX) {
-    receive_bit();
-  } else if (radio_state == RS_TX) {
-    send_bit();
-  }
-}
-
-#endif
-
 static void cc_enter_rx_mode(void) {
   EIMSK &= ~INT_MASK;            // Disable interrupts
 
@@ -477,7 +433,6 @@ static void cc_enter_rx_mode(void) {
   spi_strobe( CC1100_SFRX );
   while ( CC_STATE( spi_strobe( CC1100_SRX ) ) != CC_STATE_RX );
 
-#if defined(USE_FIFO)
   frame_state = FRAME_IDLE;
 
   cc_frame_init();  // Initialise Frame interrupt
@@ -486,46 +441,10 @@ static void cc_enter_rx_mode(void) {
   cc_start_rx();
 
   EIFR  |= INT_MASK;          // Acknowledge any  previous edges
-#else
-  radio_state = RS_RX;
-
-  GDO0_DATA_DDR &= ~(1 << GDO0_DATA_PIN);    // Set data pin for input
-  EICRA |= (1 << GDO2_CLK_INT_ISCn1);      // Set edge trigger
-  EICRA |= (1 << GDO2_CLK_INT_ISCn0);      // ... rising edge
-#endif
   EIMSK |= INT_MASK;            // Enable interrupts
 }
 
-#if !defined(USE_FIFO)
-static void cc_enter_tx_mode(void) {
-  EIMSK &= ~INT_MASK;            // Disable interrupts
-
-  cc_write( 0x08, 0x02 ); // Set infinite packet
-
-  while ((spi_strobe(CC1100_SIDLE) & CC1100_STATUS_STATE_BM) != CC1100_STATE_IDLE);
-  while ((spi_strobe(CC1100_STX) & CC1100_STATUS_STATE_BM) != CC1100_STATE_TX);
-
-#if defined(USE_FIFO)
-  EICRA |= (1 << GDO0_INT_ISCn1);          // Set edge trigger
-  EICRA |= (1 << GDO0_INT_ISCn0);          // ... rising edge
-
-  EICRA |= (1 << GDO2_CLK_INT_ISCn1);      // Set edge trigger
-  EICRA |= (1 << GDO2_CLK_INT_ISCn0);      // ... rising edge
-#else
-  radio_state = RS_TX;
-
-  GDO0_DATA_DDR |= (1 << GDO0_DATA_PIN);    // Set data pin for output
-  EICRA |= (1 << GDO2_CLK_INT_ISCn1);       // Set rising edge
-  EICRA |= (1 << GDO2_CLK_INT_ISCn0);       //   ...
-#endif
-  EIMSK |= INT_MASK;            // Enable interrupts
-}
-#endif
-
-void cc_init(accept_bit_fn a, request_bit_fn r) {
-  accept_bit = a;
-  request_bit = r;
-
+void cc_init(void) {
   spi_init();
 
   spi_deassert();
@@ -550,12 +469,5 @@ void cc_init(accept_bit_fn a, request_bit_fn r) {
 }
 
 void cc_work(void) {
-#if !defined(USE_FIFO)
-  if (radio_state == RS_CHANGE_TO_RX) {
-    cc_enter_rx_mode();
-  } else if (radio_state == RS_CHANGE_TO_TX) {
-    cc_enter_tx_mode();
-  }
-#endif
 }
 

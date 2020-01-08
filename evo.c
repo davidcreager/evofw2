@@ -24,8 +24,7 @@ void main_init(void) {
   transcoder_init(&tty_write_str, 0);//&driver_send_byte);
   bs_init();
   tty_init(&transcoder_accept_outbound_byte);
-  cc_init(0,0);//&driver_accept_bit, &driver_request_bit);
-
+  cc_init();
   led_off();
   sei();
 }
