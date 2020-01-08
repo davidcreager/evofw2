@@ -163,8 +163,6 @@ static uint8_t cc_read_fifo(uint8_t *buffer, uint8_t readAll)
 }
 
 
-#define INT_MASK  ( FRAME_INT | FIFO_INT )
-
 static uint16_t frameLen;
 static uint16_t rxBytes;
 static uint8_t writePktLen = 1;
@@ -206,6 +204,11 @@ static void read_fifo(uint8_t readAll)
 }
 
 //----------------------------------------------
+static void detect_frame_start(void);
+static void detect_frame_end(void);
+static void detect_fifo_rx_high(void);
+static void detect_fifo_tx_low(void);
+
 static void cc_enable_rx(void);
 static void cc_start_rx(void);
 static void cc_process_rx(void);
@@ -230,13 +233,10 @@ static void cc_enable_rx(void) {
 static void cc_start_rx(void) {
 
   // Configure FIFO interrupt to use RX fifo
-  // Signal asserts when FIFO is at or above threshhold
-  // Signal clears when FIFO drained below threshhold
   cc_write( CC1100_IOCFG2, 0 );
   cc_write( CC1100_FIFOTHR, 0 );  // 4 bytes in RX FIFO
 
-  EICRA |= ( 1 << FIFO_INT_ISCn1 );   // Set edge trigger
-  EICRA |= ( 1 << FIFO_INT_ISCn0 );   // ... rising edge
+  detect_fifo_rx_high();
 
   frameLen = 0xFFFF;
   writePktLen = 1;
@@ -282,8 +282,7 @@ static void cc_start_tx(void) {
   cc_write( CC1100_IOCFG2, 2 );
   cc_write( CC1100_FIFOTHR, 7 );    // 32 bytes in TX FIFO
 
-  EICRA |=  ( 1 << FIFO_INT_ISCn1 );  // Set edge trigger
-  EICRA &= ~( 1 << FIFO_INT_ISCn0 );  // ... falling edge
+  detect_fifo_tx_low();
 
   cc_write( CC1100_PKTLEN, pktLen & 0xFF );
 
@@ -317,8 +316,22 @@ static void cc_end_tx(void) {
 }
 
 /****************************************************************
-* Frame Itterrupt
+* Frame Interrupt
 */
+#define INT_MASK  ( FRAME_INT | FIFO_INT )
+
+// Configure Frame interrupt to detect start of frame
+static void detect_frame_start(void) {
+  EICRA |=  ( 1 << FRAME_INT_ISCn1 ); // Set edge trigger
+  EICRA |=  ( 1 << FRAME_INT_ISCn0 ); // Trigger on next rising edge
+}
+
+// Configure Frame interrupt to detect end of frame
+static void detect_frame_end(void) {
+  EICRA |=  ( 1 << FRAME_INT_ISCn1 ); // Set edge trigger
+  EICRA &= ~( 1 << FRAME_INT_ISCn0 ); // Trigger on next falling edge
+}
+
 
 ISR(FRAME_INT_VECT) {
 FRAME_INT_ENTER
@@ -331,13 +344,13 @@ FRAME_INT_ENTER
     switch( CC_STATE(status) ) {
       case CC_STATE_RX:
         cc_start_rx();
-        EICRA &= ~( 1 << FRAME_INT_ISCn0 );   // Trigger on next falling edge
+		detect_frame_end();
         frame_state = FRAME_RX;
         break;
 
       case CC_STATE_TX:
         cc_start_tx();
-        EICRA &= ~( 1 << FRAME_INT_ISCn0 );   // Trigger on next falling edge
+		detect_frame_end();
         frame_state = FRAME_TX;
         break;
     }
@@ -345,27 +358,36 @@ FRAME_INT_ENTER
 
   case FRAME_RX:  // End of RX Frame
     cc_end_rx();
-    EICRA |= (1 << FRAME_INT_ISCn0);          // Trigger on next rising edge
+    detect_frame_start();
     frame_state = FRAME_IDLE;
     break;
 
   case FRAME_TX:  // End of TX frame;
     cc_end_tx();
-    EICRA |= (1 << FRAME_INT_ISCn0);          // Trigger on next rising edge
+    detect_frame_start();
     frame_state = FRAME_IDLE;
     break;
   }
 FRAME_INT_LEAVE
 }
 
-static void cc_frame_init(void) {
-  EICRA |= (1 << FRAME_INT_ISCn1);          // Set edge trigger
-  EICRA |= (1 << FRAME_INT_ISCn0);          // ... rising edge
-}
-
 /****************************************************************
 * FIFO Itterrupt
 */
+// Signal asserts when FIFO is at or above threshhold
+// Signal clears when FIFO drained below threshhold
+
+// Configure FIFO interrupt to detect RX activity
+static void detect_fifo_rx_high(void) {
+  EICRA |=  ( 1 << FIFO_INT_ISCn1 );   // Set edge trigger
+  EICRA |=  ( 1 << FIFO_INT_ISCn0 );   // ... rising edge
+}
+
+// Configure FIFO interrupt to detect TX activity
+static void detect_fifo_tx_low(void) {
+  EICRA |=  ( 1 << FIFO_INT_ISCn1 );   // Set edge trigger
+  EICRA &= ~( 1 << FIFO_INT_ISCn0 );   // ... falling edge
+}
 
 ISR(FIFO_INT_VECT) {
   // Fifo Interrupt
@@ -435,7 +457,7 @@ static void cc_enter_rx_mode(void) {
 
   frame_state = FRAME_IDLE;
 
-  cc_frame_init();  // Initialise Frame interrupt
+  detect_frame_start();
   cc_tx_init();     // Initialise Softwre TX  interrupt
 
   cc_start_rx();
