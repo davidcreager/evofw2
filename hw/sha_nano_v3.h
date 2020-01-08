@@ -18,23 +18,17 @@
 #define SPI_SCLK    5
 #define SPI_CLK_RATE 250000
 
-// Connection to CC1101 GDO2
-#define GDO2_CLK_PIN         2
-#define GDO2_CLK_INT         INT0
-#define GDO2_CLK_INTVECT     INT0_vect
-#define GDO2_CLK_INT_ISCn0   ISC00
-#define GDO2_CLK_INT_ISCn1   ISC01
+// FIFO level interrupt
+#define FIFO_INT         ( 1 << INT0 )
+#define FIFO_INT_VECT    INT0_vect
+#define FIFO_INT_ISCn0   ISC00
+#define FIFO_INT_ISCn1   ISC01
 
-// Connection to CC1101 GDO0
-#define GDO0_INT         INT1
-#define GDO0_INTVECT     INT1_vect
-#define GDO0_INT_ISCn0   ISC10
-#define GDO0_INT_ISCn1   ISC11
-
-#define GDO0_DATA_DDR     DDRD
-#define GDO0_DATA_PORT    PORTD
-#define GDO0_DATA_PIN     3
-#define GDO0_DATA_IN      PIND
+// Frame detect interrupt
+#define FRAME_INT        ( 1 << INT1 )
+#define FRAME_INT_VECT   INT1_vect
+#define FRAME_INT_ISCn0  ISC10
+#define FRAME_INT_ISCn1  ISC11
 
 // Software interrupt
 #define SW_INT           ( 1<<PCIE2 )

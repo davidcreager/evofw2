@@ -168,8 +168,6 @@ static uint8_t cc_read_fifo(uint8_t *buffer, uint8_t readAll)
 
 #if defined(USE_FIFO)
 
-#define FRAME_INT ( 1 << GDO0_INT )
-#define FIFO_INT  ( 1 << GDO2_CLK_INT )
 #define INT_MASK  ( FRAME_INT | FIFO_INT )
 
 static uint16_t frameLen;
@@ -242,8 +240,8 @@ static void cc_start_rx(void) {
   cc_write( CC1100_IOCFG2, 0 );
   cc_write( CC1100_FIFOTHR, 0 );  // 4 bytes in RX FIFO
 
-  EICRA |= ( 1 << GDO2_CLK_INT_ISCn1 );   // Set edge trigger
-  EICRA |= ( 1 << GDO2_CLK_INT_ISCn0 );   // ... rising edge
+  EICRA |= ( 1 << FIFO_INT_ISCn1 );   // Set edge trigger
+  EICRA |= ( 1 << FIFO_INT_ISCn0 );   // ... rising edge
 
   frameLen = 0xFFFF;
   writePktLen = 1;
@@ -289,8 +287,8 @@ static void cc_start_tx(void) {
   cc_write( CC1100_IOCFG2, 2 );
   cc_write( CC1100_FIFOTHR, 7 );    // 32 bytes in TX FIFO
 
-  EICRA |=  ( 1 << GDO2_CLK_INT_ISCn1 );  // Set edge trigger
-  EICRA &= ~( 1 << GDO2_CLK_INT_ISCn0 );  // ... falling edge
+  EICRA |=  ( 1 << FIFO_INT_ISCn1 );  // Set edge trigger
+  EICRA &= ~( 1 << FIFO_INT_ISCn0 );  // ... falling edge
 
   cc_write( CC1100_PKTLEN, pktLen & 0xFF );
 
@@ -327,7 +325,7 @@ static void cc_end_tx(void) {
 * Frame Itterrupt
 */
 
-ISR(GDO0_INTVECT) {
+ISR(FRAME_INT_VECT) {
 FRAME_INT_ENTER
   // Frame interrupt
   uint8_t status = spi_strobe(CC1100_SNOP);
@@ -338,13 +336,13 @@ FRAME_INT_ENTER
     switch( CC_STATE(status) ) {
       case CC_STATE_RX:
         cc_start_rx();
-        EICRA &= ~( 1 << GDO0_INT_ISCn0 );   // Trigger on next falling edge
+        EICRA &= ~( 1 << FRAME_INT_ISCn0 );   // Trigger on next falling edge
         frame_state = FRAME_RX;
         break;
 
       case CC_STATE_TX:
         cc_start_tx();
-        EICRA &= ~( 1 << GDO0_INT_ISCn0 );   // Trigger on next falling edge
+        EICRA &= ~( 1 << FRAME_INT_ISCn0 );   // Trigger on next falling edge
         frame_state = FRAME_TX;
         break;
     }
@@ -352,13 +350,13 @@ FRAME_INT_ENTER
 
   case FRAME_RX:  // End of RX Frame
     cc_end_rx();
-    EICRA |= (1 << GDO0_INT_ISCn0);          // Trigger on next rising edge
+    EICRA |= (1 << FRAME_INT_ISCn0);          // Trigger on next rising edge
     frame_state = FRAME_IDLE;
     break;
 
   case FRAME_TX:  // End of TX frame;
     cc_end_tx();
-    EICRA |= (1 << GDO0_INT_ISCn0);          // Trigger on next rising edge
+    EICRA |= (1 << FRAME_INT_ISCn0);          // Trigger on next rising edge
     frame_state = FRAME_IDLE;
     break;
   }
@@ -366,15 +364,15 @@ FRAME_INT_LEAVE
 }
 
 static void cc_frame_init(void) {
-  EICRA |= (1 << GDO0_INT_ISCn1);          // Set edge trigger
-  EICRA |= (1 << GDO0_INT_ISCn0);          // ... rising edge
+  EICRA |= (1 << FRAME_INT_ISCn1);          // Set edge trigger
+  EICRA |= (1 << FRAME_INT_ISCn0);          // ... rising edge
 }
 
 /****************************************************************
 * FIFO Itterrupt
 */
 
-ISR(GDO2_CLK_INTVECT) {
+ISR(FIFO_INT_VECT) {
   // Fifo Interrupt
 FIFO_INT_ENTER
   switch( frame_state ) {
@@ -507,7 +505,7 @@ static void cc_enter_tx_mode(void) {
   while ((spi_strobe(CC1100_SIDLE) & CC1100_STATUS_STATE_BM) != CC1100_STATE_IDLE);
   while ((spi_strobe(CC1100_STX) & CC1100_STATUS_STATE_BM) != CC1100_STATE_TX);
 
-#if!defined(USE_FIFO)
+#if defined(USE_FIFO)
   EICRA |= (1 << GDO0_INT_ISCn1);          // Set edge trigger
   EICRA |= (1 << GDO0_INT_ISCn0);          // ... rising edge
 
