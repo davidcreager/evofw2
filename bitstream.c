@@ -554,7 +554,7 @@ static uint16_t txBytes;  // Number of bytes processed
 static uint16_t txPktlen; // Length of packet to be transmitted
 static uint16_t txOctets; // Nnmber of octets transferred to FIFO
 
-static rb_t tx_msg;
+RINGBUF( TX_MSG,128 );
 
 // Start/stop insertion control
 static union shift_register tx;
@@ -657,11 +657,11 @@ uint8_t bs_process_tx( uint8_t space ) {
     // Transfer message to radio
     while( space > 5 ) {
       // Room for a message byte and Evo Trailer/padding
-      if( !rb_empty( &tx_msg ) )
+      if( !rb_empty( &TX_MSG.rb ) )
       {
         uint8_t msgByte;
 
-        msgByte = rb_get( &tx_msg );
+        msgByte = rb_get( &TX_MSG.rb );
         space -= encode_byte( msgByte );
         txBytes++;
       }
@@ -727,10 +727,10 @@ uint8_t bs_send_message( uint16_t msgLen ) {
 }
 
 uint8_t bs_send_data( uint8_t msgByte ) {
-  if( rb_full( &tx_msg ) )
+  if( rb_full( &TX_MSG.rb ) )
     return 0;
 
-  rb_put( &tx_msg, msgByte );
+  rb_put( &TX_MSG.rb, msgByte );
 
   if( txState != TX_IDLE )
     cc_tx_trigger();
@@ -747,7 +747,7 @@ void bs_init(void)
   for( i=4, hdr=EVO_SYNCH ; i>0 ; i--, hdr>>=8 )
     evo_header[i-1] = hdr & 0xFF;
 
-  rb_reset( &tx_msg );
+  rb_reset( &TX_MSG.rb );
   manchester_init();
 }
 

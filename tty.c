@@ -8,13 +8,13 @@
 
 static outbound_byte_fn outbound_byte;
 
-static rb_t tx_buffer;
-static rb_t rx_buffer;
+RINGBUF( TX, 128 );
+RINGBUF( RX, 128 );
 
 // TX complete. Send next char; disable interrupt if nothing else to do
 ISR(TTY_UDRE_VECT) {
-  UDR0 = rb_get(&tx_buffer);
-  if (tx_buffer.nbytes == 0) {
+  UDR0 = rb_get(&TX.rb);
+  if( rb_empty(&TX.rb) ) {
     UCSR0B &= ~(1 << UDRIE0);
   }
 }
@@ -25,7 +25,7 @@ ISR(TTY_RX_VECT) {
   uint8_t flags = UCSR0A;
 
   if ((flags & ((1 << FE0) | (1 << DOR0))) == 0) {
-    rb_put(&rx_buffer, data);
+    rb_put( &RX.rb, data);
   }
 }
 
@@ -66,8 +66,8 @@ static void tty_init_uart( uint32_t Fosc, uint32_t bitrate )
 
 void tty_init(outbound_byte_fn o) {
   outbound_byte = o;
-  rb_reset(&tx_buffer);
-  rb_reset(&rx_buffer);
+  rb_reset(&TX.rb);
+  rb_reset(&RX.rb);
 
   tty_init_uart( F_CPU, TTY_BAUD_RATE);
 
@@ -76,18 +76,18 @@ void tty_init(outbound_byte_fn o) {
 }
 
 void tty_work(void) {
-  if (rx_buffer.nbytes) {
+  if( !rb_empty(&RX.rb) ) {
     led_toggle();
-    uint8_t b = rb_get(&rx_buffer);
+    uint8_t b = rb_get(&RX.rb);
     outbound_byte(b);
   }
 }
 
 void tty_write_char(char c) {
   // Silently drop characters if the buffer is full...
-  if ((tx_buffer.nbytes < RINGBUF_SIZE - 2) ||
-      (tx_buffer.nbytes < RINGBUF_SIZE && (c == '\r' || c == '\n'))) {
-    rb_put(&tx_buffer, c);
+  uint16_t space = rb_space(&TX.rb);
+  if( ( space > 2 ) || ( space!=0 && (c == '\r' || c == '\n') ) ) {
+    rb_put(&TX.rb, c);
     UCSR0B |= (1 << UDRIE0);  // Enable transmit interrupt
   }
 }

@@ -6,9 +6,10 @@
 #include "config.h"
 #include "errors.h"
 #include "tty.h"
-#include "ringbuf.h"
 #include "bitstream.h"
+#include "ringbuf.h"
 #include "transcoder.h"
+
 
 #define S_HEADER     0
 #define S_ADDR0      1
@@ -256,7 +257,7 @@ void transcoder_accept_inbound_byte(uint8_t b, uint8_t status) {
 
 #if defined(USE_FIFO)
 
-static rb_t rx_msg;
+RINGBUF(RX_MSG,128);
 
 uint16_t transcoder_param_len( uint8_t hdr ) {
   uint16_t paramLen = 0;
@@ -273,20 +274,21 @@ uint16_t transcoder_param_len( uint8_t hdr ) {
 }
 
 void transcoder_rx_byte( uint8_t byte ) {
-  if( byte==0xFF ) rb_put( &rx_msg, 0xFF ); // Add escape char
-  rb_put( &rx_msg, byte );
+  if( byte==0xFF ) rb_put( &RX_MSG.rb, 0xFF ); // Add escape char
+  rb_put( &RX_MSG.rb, byte );
 }
 
 void transcoder_rx_status( uint8_t status ) {
-  rb_put( &rx_msg, 0xFF );  // Add escape char
-  rb_put( &rx_msg, status );
+  rb_put( &RX_MSG.rb, 0xFF );  // Add escape char
+  rb_put( &RX_MSG.rb, status );
 }
 
 static void transcoder_rx_work(void) {
   static uint8_t status=0;
 
-  while( !rb_empty( &rx_msg )) {
-   uint8_t byte = rb_get(&rx_msg);
+  while( !rb_empty( &RX_MSG.rb )) {
+   uint8_t byte = rb_get(&RX_MSG.rb);
+tty_write_char('<');tty_write_hex(byte);tty_write_char('>');
     if( byte==0xFF && status==0 ) {
       status = 1; // Escape value seen
     } else {
