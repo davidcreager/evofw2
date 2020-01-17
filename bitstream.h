@@ -30,5 +30,6 @@ extern uint8_t bs_send_message( uint16_t msgLen );
 extern uint8_t bs_send_data( uint8_t msgByte );
 
 extern void bs_init(void);
+extern uint16_t bs_sync_word(void);
 
 #endif

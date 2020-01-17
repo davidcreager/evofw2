@@ -18,4 +18,6 @@ extern void cc_tx_trigger(void);
 extern void cc_init(void);
 extern void cc_work(void);
 
+extern void cc_set_pktlen( uint16_t len, uint16_t current );
+extern void cc_check_pktLen( uint16_t current );
 #endif

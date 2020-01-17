@@ -100,24 +100,19 @@
 *               ><                 50 bits                        ><
 *      0101010101011111111100000000010110011001010101010101100101010xxxxxxxx10xxxxxxxx1
 *      s<  AA  >ps<  FF  >ps<  00  >ps<  CC  >ps<  AA  >ps<  CA  >ps<  MM  >ps<  mm  >p
-*   N x 10101010 ><  SYNC1/0     ><          EVO_SYNCH           >< Evo message
-*                ><  16 bits     ><          32 bits             ><   8  ><  8   >< ...
-*      preamble  ><  0xFF 0x80   ><     0x2C 0xCA 0xAA 0xCA      >
+*   N x 10101010 >1<  SYNC1/0     >0<           EVO_SYNCH          >< Evo message
+*                >1<  16 bits     >0<           32 bits            ><   8  ><  8   >< ...
+*      preamble   ><  0xFF 0x00   >0<      0xB3 0x2A 0xAB 0x2A     >
 *
 *  NOTES:
-*   SYNC begins with what is the first data bit of the FF byte
-*        the corresponding start bit is left as part of [bit synch pattern]
-*   EVO_SYNCH is the 32 bits that immediately follow SYNC1/0
-*             including the last 2 data bits of 0x00 but
-*             excluding the stop bit of 0xCA
-*             32 bits means that exactly 4 octets are occupied
-*   The first octet following EVO_SYNCH will be of the form psBBBBBB
-*
-*   These values are consistent with the required TX behaviour
+*   SYNC Follows the preamble and must finish before EVO_SYNCH
+*        
+*   EVO_SYNCH is the 32 bits that span CC AA CA including surrounding stop/start pairs
+*             
 */
 
-#define CC1101_SYNC 0xFF80     /* 1111 1111 1000 0000 */
-#define EVO_SYNCH   0x2CCAAACA /* 0010 1100 1100 1010 1010 1010 1100 1010 */
+#define CC1101_SYNC 0xFF00     /* 1111 1111 0000 0000 */
+#define EVO_SYNCH   0xB32AAB2A /* 1011 0011 0010 1010 1010 1011 0010 1010 */
 #define EVO_EOF     0xAC       /* 1010 1100 */
 #define BIT_TRAIN   0xAA       /* 1010 1010 */
 
@@ -345,6 +340,7 @@ static void rx_data(void) { // Process the byte now in rx.data
 }
 
 uint16_t bs_accept_octet( uint8_t bits ) {
+ // tty_write_char('<'); tty_write_hex(bits); tty_write_char('>');
 
   /*------------------------------------------------------------*/
   /* Special values used to control the bitstream processing    */
@@ -411,8 +407,7 @@ uint16_t bs_accept_octet( uint8_t bits ) {
 
       if( synchronised ) { // Found it!
         // Now work out what state the next byte represents
-        // Start by assuming we used all the bits of the last octet
-        rxBits = 8;
+        rxBits = 0;
         while( mask ) { // Logically process any remaining bits
           // Cycle the state for each bit we haven't consumed
           // This includes stop/start bits to be discarded
@@ -482,6 +477,20 @@ uint16_t bs_accept_octet( uint8_t bits ) {
       // Just received the (header), work out when to expect (len)
       //              hdr  params                           cmd len
       payload_offset = 1 + transcoder_param_len( decoded ) + 2 + 1 ;
+	  uint16_t len = payload_offset;
+      len += 1;		  // minimum payload
+      len += 1;		  // checksum
+      len *= 2;		  // Manchester encoded
+      len += 1;		  // EVO_EOF
+	  
+      len *= 10;      // Convert to bits including start/stop
+      len += 7;       // allow for padding with bit training
+
+      len /= 8;       // convert to octets
+      len += 4;       // EVO_SYNCH we've already received
+
+      // Special case return
+      return len;	  // Always at least 19: evo_synch[4] hdr[2.5] cmd[5] len[2.5] pl[1.25] csum[2.5] evo_eof[1.25]
     } else {
       synchronised = BS_ABORT; // can't work out packet length now
     }
@@ -508,7 +517,7 @@ uint16_t bs_accept_octet( uint8_t bits ) {
       rx_pktLen += rx_octets; // Add in what we've already received
 
       // Special case return
-      return rx_pktLen;	  // Always at least 20: evo_synch[5] hdr[2.5] cmd[5] len[2.5] pl[1.25] csum[2.5] evo_eof[1.25]
+      return rx_pktLen;	  // Always at least 19: evo_synch[4] hdr[2.5] cmd[5] len[2.5] pl[1.25] csum[2.5] evo_eof[1.25]
     } else {
       synchronised = BS_ABORT;  // Can't work out packet length now
     }
@@ -750,4 +759,3 @@ void bs_init(void)
   rb_reset( &TX_MSG.rb );
   manchester_init();
 }
-

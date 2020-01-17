@@ -11,6 +11,8 @@
 #include <avr/pgmspace.h>
 #include <util/delay.h>
 
+#include "tty.h"
+
 #include "spi.h"
 #include "config.h"
 #include "bitstream.h"
@@ -19,8 +21,8 @@
 
 #define FRAME_INT_ENTER DEBUG1_ON
 #define FRAME_INT_LEAVE DEBUG1_OFF
-#define FIFO_INT_ENTER  DEBUG2_ON
-#define FIFO_INT_LEAVE  DEBUG2_OFF
+#define FIFO_INT_ENTER  DEBUG3_ON
+#define FIFO_INT_LEAVE  DEBUG3_OFF
 
 
 // CC1101 register settings
@@ -31,8 +33,6 @@ static const uint8_t PROGMEM CC_REGISTER_VALUES[] = {
   CC1100_IOCFG0, 0x06,  // GDO0- Frame interrupt
   
   CC1100_FIFOTHR,  0x00, // 
-  CC1100_SYNC1,    0xFF, // SYNC WORD   1111 1111[1] [0]0000 00
-  CC1100_SYNC0,    0x80, //
   CC1100_PKTLEN,   0xFF, //
   CC1100_PKTCTRL1, 0x80, //
   CC1100_PKTCTRL0, 0x02, //
@@ -50,7 +50,7 @@ static const uint8_t PROGMEM CC_REGISTER_VALUES[] = {
   CC1100_DEVIATN, 0x50,  //
 
   CC1100_MCSM2,   0x07,  //
-  CC1100_MCSM1,   0x2F,  // CCA_MODE unless currently receiving a packet, RXOFF_MODE stay in RX, TX_OFF_MODE RX
+  CC1100_MCSM1,   0x20,  // CCA_MODE unless currently receiving a packet, RXOFF_MODE to IDLE , TX_OFF_MODE to IDLE
   CC1100_MCSM0,   0x18,  // (0x18=11000 FS_AUTOCAL=1 When going from IDLE to RX or TX)
 
   CC1100_FOCCFG,  0x16,  //
@@ -117,6 +117,71 @@ static uint8_t cc_write(uint8_t addr, uint8_t b) {
 }
 
 /******************************************************
+** The CC110 RX and TX FIFOs are shorter than 
+** the length of messages we might have to handle.
+** To handle packets longer than the FIFO
+** we have to use Infinite packet mode
+** until we reach the final buffer length of data
+*/
+
+static uint16_t PktLen = 0;	// length of current packet
+static uint8_t PktMode = 3;
+static uint8_t PktBuf = 0;	// Outstanding buffer boundaries
+
+void cc_set_pktLen( uint16_t len, uint16_t current ) {
+  uint8_t pktBuf,pktLen;
+  uint8_t currBuf,currLen;
+  uint8_t pktMode;
+  
+  // Protect against unexpected conditions
+  if( current > len )
+    len = current + 1;
+
+  pktBuf = len / 256;
+  pktLen = len % 256;
+  currBuf = current / 256;
+  currLen = current % 256;
+
+#if 0
+  tty_write_char('[');
+  tty_write_hex(pktBuf); tty_write_char('.'); tty_write_hex(pktLen); 
+  tty_write_char(':');
+  tty_write_hex(currBuf); tty_write_char('.'); tty_write_hex(currLen); 
+  tty_write_char(']');
+#endif
+
+  pktMode = 0;	// assume fixed packet mode
+  
+  PktBuf = pktBuf - currBuf ;
+  
+  // are we in final buffer yet
+  if( PktBuf>0 ) { // NO
+    // past end point in pen-ultimate buffer?
+    if( ( PktBuf>1 ) || ( currLen<=pktLen ) ) { // NO
+        pktMode = 2; // Infinite packet mode
+    } else { // We're leaving infinite mode
+	  PktBuf = 0; // We're past last buffer wrap
+    }
+  }
+
+  // Only update the chip if something changes
+  if( len != PktLen ) cc_write( CC1100_PKTLEN, pktLen );
+  if( PktMode!=pktMode ) cc_write( CC1100_PKTCTRL0, pktMode );
+
+  PktLen = len;
+  PktMode = pktMode;
+}
+
+void cc_check_pktLen( uint16_t current )
+{
+  // Only need to check if we're handling a long packet
+  if( PktBuf > 0 ) {
+    if( current+256 > PktLen )
+      cc_set_pktLen( PktLen, current );
+  }
+}
+
+/******************************************************
 * It is important to read the fifo with the minimal
 * number of SPI cycles because data is accumulating
 * while we are reading it.
@@ -126,55 +191,41 @@ static uint8_t cc_write(uint8_t addr, uint8_t b) {
 * want the last byte of the packet to get into the FIFO
 * before we've set the pktLen.
 */
-static uint8_t cc_read_fifo(uint8_t *buffer, uint8_t readAll)
-{
-  uint16_t nByte,nByte1=255;
+static uint8_t cc_read_fifo(uint8_t *buffer, uint8_t flush )
+{ 
+  uint8_t nOctet=0, nFifo, status;
 
-  while( 1 ) {
-    uint8_t status;
-
-    spi_assert();
-    while( spi_check_miso() );
-
-    status = spi_send(CC1100_FIFO|0x40|0x80); // FFIFO+read+burst
-    nByte = status & 0x0F;
-    if( nByte==nByte1   ) break;  // Same 
-    if( nByte==nByte1+1 ) break;  // or one byte added to fifo
-    nByte1 = nByte;
-
-    while( spi_check_miso() );
-    spi_deassert();
-  }
-
-  if( nByte>0 )
-  {
-    if( !readAll ) nByte -= 1;
-    for( nByte1=0; nByte1<nByte; nByte1++ )
-    {
-      *buffer = spi_send(0);
-      buffer++;
-    }
-  }
-
+  spi_assert();
   while( spi_check_miso() );
+
+  // Read FIFO status
+  status = spi_send(CC1100_FIFO|0x40|0x80); // FIFO+read+burst
+  nFifo = status & 0x0F;
+
+  // Decide how many octets we're going to remove from the FIFO
+  if( !flush )
+    nFifo -= 1;
+  
+  while( nFifo-- )
+    buffer[nOctet++] = spi_send(0);
+
   spi_deassert();
 
-  return nByte;  
+  return nOctet;  
 }
 
 
 static uint16_t frameLen;
 static uint16_t rxBytes;
-static uint8_t writePktLen = 1;
 
 static uint8_t rx_data[64];
 
 static void read_fifo(uint8_t readAll)
 {
  uint8_t *data =rx_data;
-  uint8_t nByte = cc_read_fifo( data, readAll );
+  uint8_t nOctet = cc_read_fifo( data, readAll );
 
-  while( nByte-- )
+  while( nOctet-- )
   {
     uint16_t bs_status = bs_accept_octet( *data );
     data++;
@@ -182,25 +233,13 @@ static void read_fifo(uint8_t readAll)
 
     if( bs_status == BS_END_OF_PACKET ) { 
       readAll = 1;
-    } else if( bs_status > BS_MAX_STATUS ) { // Final packet length
-      if( frameLen==0xFFFF ) {
-        frameLen = bs_status;
-        cc_write( 0x06, frameLen & 0xFF );
-      }
-    }
-
-    if( frameLen != 0xFFFF ) {
-      while( rxBytes>255 ) {
-        rxBytes -= 256;
-        frameLen -= 256;
-      }
-
-      if( writePktLen &&  frameLen < 256 ) {
-        writePktLen = 0; // Only write this once
-        cc_write( 0x08, 0x00 );
-      }
+    } else if( bs_status > BS_MAX_STATUS ) { // new packet length
+      frameLen = bs_status;
+      cc_set_pktLen( frameLen, rxBytes+nOctet );	// Include data we've taken from FIFO but not processed
     }
   }
+
+  cc_check_pktLen( rxBytes );
 }
 
 //----------------------------------------------
@@ -223,36 +262,39 @@ static uint8_t tx_pending = 0;
 
 //----------------------------------------------
 static void cc_enable_rx(void) {
-  // Radio automatically switches back to RX after TX frame
-  // or stays there after RX frame
-  
-  cc_write( CC1100_PKTCTRL0, 0x02 ); // Infinite packet mode
-}
-
-// Called From Frame interrupt when RX start detected
-static void cc_start_rx(void) {
+  cc_set_pktLen( 16,0 );	// TODO: get bitstream to tell us starting packet length
 
   // Configure FIFO interrupt to use RX fifo
   cc_write( CC1100_IOCFG2, 0 );
   cc_write( CC1100_FIFOTHR, 0 );  // 4 bytes in RX FIFO
 
   detect_fifo_rx_high();
+  
+  spi_strobe( CC1100_SRX );
+}
+
+// Called From Frame interrupt when RX start detected
+static void cc_start_rx(void) {
+//tty_write_char('{');
 
   frameLen = 0xFFFF;
-  writePktLen = 1;
   rxBytes = 0;
 
   bs_accept_octet(0x00);
 }
 
 static void cc_process_rx(void) {
+//tty_write_char('%');
+	
   read_fifo(0);      // Leave at least 1 byte in FIFO (see errata)
-  cc_process_tx(0);  // pull pending TX data
+  //cc_process_tx(0);  // pull pending TX data
 }
 
 static void cc_end_rx(void) {
   read_fifo(1);  // We can empty FIFO now
   bs_accept_octet(0xFF);
+
+//tty_write_char('}');
 
   if( tx_pending )
     cc_enable_tx();
@@ -263,8 +305,6 @@ static void cc_end_rx(void) {
 //----------------------------------------------
 
 static void cc_enable_tx(void) {
-  cc_write( CC1100_PKTCTRL0, 0x02 ); // Infinite packet mode
-
   if( bs_enable_tx() ) {
     // Kick the radio. If it can detect RX activity nothing will happen
     // Don't do anything else until we actually see a TX frame
@@ -418,7 +458,7 @@ ISR(SW_INT_VECT) {
   switch( frame_state ) {
     case FRAME_IDLE:
       cc_process_tx( 1 );
-      cc_enable_tx();
+//      cc_enable_tx();
       break;
     case FRAME_TX:
       cc_process_tx( 1 );
@@ -458,9 +498,7 @@ static void cc_enter_rx_mode(void) {
   frame_state = FRAME_IDLE;
 
   detect_frame_start();
-  cc_tx_init();     // Initialise Softwre TX  interrupt
-
-  cc_start_rx();
+  cc_enable_rx();
 
   EIFR  |= INT_MASK;          // Acknowledge any  previous edges
   EIMSK |= INT_MASK;            // Enable interrupts
@@ -487,9 +525,14 @@ void cc_init(void) {
     cc_write(reg, val);
   }
 
+  // Configure the SYNC WORD required by bitstream 
+  uint16_t syncWord = bs_sync_word();
+  cc_write( CC1100_SYNC1, ( syncWord>>8 ) & 0xff );
+  cc_write( CC1100_SYNC0, ( syncWord    ) & 0xff );
+  
+  cc_tx_init();     // Initialise Softwre TX  interrupt
   cc_enter_rx_mode();
 }
 
 void cc_work(void) {
 }
-
