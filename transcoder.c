@@ -288,7 +288,7 @@ static void transcoder_rx_work(void) {
 
   while( !rb_empty( &RX_MSG.rb )) {
    uint8_t byte = rb_get(&RX_MSG.rb);
-tty_write_char('<');tty_write_hex(byte);tty_write_char('>');
+//tty_write_char('<');tty_write_hex(byte);tty_write_char('>');
     if( byte==0xFF && status==0 ) {
       status = 1; // Escape value seen
     } else {
