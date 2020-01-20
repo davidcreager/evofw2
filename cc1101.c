@@ -128,7 +128,7 @@ static uint16_t PktLen = 0;	// length of current packet
 static uint8_t PktMode = 3;
 static uint8_t PktBuf = 0;	// Outstanding buffer boundaries
 
-void cc_set_pktLen( uint16_t len, uint16_t current ) {
+static void cc_set_pktLen( uint16_t len, uint16_t current ) {
   uint8_t pktBuf,pktLen;
   uint8_t currBuf,currLen;
   uint8_t pktMode;
@@ -172,7 +172,7 @@ void cc_set_pktLen( uint16_t len, uint16_t current ) {
   PktMode = pktMode;
 }
 
-void cc_check_pktLen( uint16_t current )
+static void cc_check_pktLen( uint16_t current )
 {
   // Only need to check if we're handling a long packet
   if( PktBuf > 0 ) {
@@ -218,11 +218,10 @@ static uint8_t cc_read_fifo(uint8_t *buffer, uint8_t flush )
 static uint16_t frameLen;
 static uint16_t rxBytes;
 
-static uint8_t rx_data[64];
-
 static void read_fifo(uint8_t readAll)
 {
- uint8_t *data =rx_data;
+  uint8_t buffer[8];
+  uint8_t *data=buffer;
   uint8_t nOctet = cc_read_fifo( data, readAll );
 
   while( nOctet-- )

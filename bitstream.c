@@ -99,10 +99,10 @@
 *
 *               ><                 50 bits                        ><
 *      0101010101011111111100000000010110011001010101010101100101010xxxxxxxx10xxxxxxxx1
-*      s<  AA  >ps<  FF  >ps<  00  >ps<  CC  >ps<  AA  >ps<  CA  >ps<  MM  >ps<  mm  >p
-*   N x 10101010 >1<  SYNC1/0     >0<           EVO_SYNCH          >< Evo message
-*                >1<  16 bits     >0<           32 bits            ><   8  ><  8   >< ...
-*      preamble   ><  0xFF 0x00   >0<      0xB3 0x2A 0xAB 0x2A     >
+*      s<  AA  >ps1<  FF  >ps<  00 >ps<  CC  >ps<  AA  >ps<  CA  >ps<  MM  >ps<  mm  >p
+*   N*10101010 >101<  SYNC1/0     ><           EVO_SYNCH          >< Evo message
+*              >101<  16 bits     ><           32 bits            ><   8  ><  8   >< ...
+*      preamble   ><  0xFF 0x00   ><      0x59 0x95 0x55 0x95     >
 *
 *  NOTES:
 *   SYNC Follows the preamble and must finish before EVO_SYNCH
@@ -112,7 +112,7 @@
 */
 
 #define CC1101_SYNC 0xFF00     /* 1111 1111 0000 0000 */
-#define EVO_SYNCH   0xB32AAB2A /* 1011 0011 0010 1010 1010 1011 0010 1010 */
+#define EVO_SYNCH   0x59955595 /* 0101 1001 1001 0101 0101 0101 1001 0101 */
 #define EVO_EOF     0xAC       /* 1010 1100 */
 #define BIT_TRAIN   0xAA       /* 1010 1010 */
 
@@ -392,37 +392,18 @@ uint16_t bs_accept_octet( uint8_t bits ) {
   /* the received bytes                                         */
   /*------------------------------------------------------------*/
   if( !synchronised ) { // we still need to find the Evo header SYNCH_PATTERN
-    uint8_t mask = 0x80;
-    while( mask ) {
-      // Move another bit into the synch register
-      synch_pattern <<= 1;
-      if( mask & bits ) synch_pattern |= 1;
-      mask >>= 1;
+    // Move another byte into the synch register
+    synch_pattern <<= 8;
+    synch_pattern |= bits;
 
-      // Check for synch pattern
-      if( synch_bits < 32 )
-        synch_bits++;
-      if( synch_bits==32 && synch_pattern==EVO_SYNCH )
-        synchronised = BS_SYNCHRONISED;
+    // Check for synch pattern
+    if( synch_bits < 32 )
+      synch_bits += 8;
+    if( synch_bits==32 && synch_pattern==EVO_SYNCH )
+      synchronised = BS_SYNCHRONISED;
 
-      if( synchronised ) { // Found it!
-        // Now work out what state the next byte represents
-        rxBits = 0;
-        while( mask ) { // Logically process any remaining bits
-          // Cycle the state for each bit we haven't consumed
-          // This includes stop/start bits to be discarded
-          rxBits = ( rxBits + 1 ) % 10;
-          mask >>= 1;
-        }
-
-        // Any remaining bits are already correctly aligned for .data
-        // Any bits we've processed or logically discarded will
-        // be removed by the next rx_data operation (no need to zero them)
-
-        // Initialise the upper half of the shift register
-        rx.data = bits ;
-      }
-    }
+    if( synchronised ) // Found it!
+      rxBits = 9; // First octet we need to discard start bit 
 
     // TODO: Consider error if EVO_SYCH not found in a timely manner
 
@@ -444,8 +425,7 @@ uint16_t bs_accept_octet( uint8_t bits ) {
    * We don't bother to explicitly discard trailing bits in 2,1
    * Every other case explicitly processes 8 bits
    */
-  switch( rxBits )
-  {
+  switch( rxBits ) {
   // Even bit alignment
   case 8:                       discard(2); keep(6); rxBits=6; break;
   case 6: keep(2);  rx_data();  discard(2); keep(4); rxBits=4; break;
