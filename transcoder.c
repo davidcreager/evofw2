@@ -564,9 +564,19 @@ static void print_error( uint8_t error ) {
 }
 
 void tc_print_message( struct message *msg ) {
+  static uint8_t lastIdx = 0xFF;
+  static uint8_t nIdx;
+  
   uint8_t flags = msg->flags;
   uint8_t flags2 = msg->flags2;
   uint8_t bytes = msg->bytes;
+  
+  nIdx = msg->idx - lastIdx;
+  if( nIdx != 1 ) {
+    tty_write_dec( nIdx, 3 );
+    tty_write_str(" missing message(s)\r\n");
+  }
+  lastIdx = msg->idx;
   
   if( TRACE(TRC_DETAIL) ) {
     tty_write_hex( msg->idx );
@@ -576,6 +586,7 @@ void tc_print_message( struct message *msg ) {
     tty_write_char(':');tty_write_hex( msg->error );
     tty_write_str("\r\n");
   }
+  
   
   print_rssi( msg->rssi, has_rssi(flags) );
   bytes -= print_pkt( pkt_type( flags ), flags2&F_TYPE );  
