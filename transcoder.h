@@ -2,8 +2,9 @@
 #define __TRANSCODER_H__
 
 #include <stdint.h>
+#include "message.h"
 
-typedef void (*write_str_fn)(char*);
+typedef void (*write_str_fn)(char const *s);
 typedef void (*send_byte_fn)(uint8_t, uint8_t end);
 void transcoder_init(write_str_fn, send_byte_fn);
 void transcoder_work(void);
@@ -13,6 +14,9 @@ void transcoder_accept_outbound_byte(uint8_t b);
 
 extern uint16_t transcoder_param_len( uint8_t hdr  );
 extern void transcoder_rx_byte( uint8_t byte );
+
+
+extern void transcoder_rx_frame( struct message *msg );
 
 enum transcoder_rx_status {
   TC_RX_IDLE,

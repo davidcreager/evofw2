@@ -1,185 +1,67 @@
+/***************************************************************************
+** bitstream.c
+**
+** The radio transmits the bytes of a packet as an 8N1 UART
+**  i.e. each byte is framed with start/stop bitstream s<XX>p (s=0, p=1)
+**
+** A packet has the following format
+** <training><sync word><message><training>
+**
+** <training> is an alternating sequence of 1's and 0's defining the bit rate
+** <sync word> is a recognisable pattern to define byte alignment of the message
+** <message> is a sequence of bytes defining the message
+** a packet is followed by a further training sequence.
+**
+** The function of bitstream is to extract the message data bits from the RX stream
+** and insert teh data bits into the TX stream.
+** i.e determine the alignment of the message ytes and iremove/insert the start/stop bits
+**
+** The radio can be programmed to look for preamble and identify a 16 bit SYNC WORD
+** Although the preamble is ideally several bytes in length the HGI80 only appears
+** to transmit a few bits.
+**
+** bitstream needs to define a SYNC WORD that maximises the possibility of correctly
+** identifying RX packets and simplifying the generation of TX packets
+**
+** The nominal value of a packet bitstream is
+**    s<  AA  >ps<  FF  >ps<  00  >ps<  m1  >ps<  m2  >p...
+**    0101010101011111111100000000010MMMMMMMM10mmmmmmmm1...
+**
+** Because of the restricted preamble transmitted by the HGI80 we want to allow
+** as many bits as possible to be interpreted as preamble.
+**
+** So we will select the second 1 of the FF to be the first bit of the SYNC WORD
+** to be detected by the radio making the SYNC WORD [FF00]
+** 
+**            s<  AA  >ps<  FF  >ps<  00  >ps<  m1  >ps<  m2  >p...
+**            0101010101011111111100000000010MMMMMMMM10mmmmmmmm1...
+** PREAMBLE    ...  010101
+** SYNC WORD              <   FF     00  >
+** ALIGNMENT                              01
+** MESSAGE                                  s<  m1  >ps<  m2  >p...
+**
+** This leaves two bits of the stream as alignmnet before the start bit of the
+** first message byte
+**
+** When transmitting the radio will automatically insert preamble and the SYNC WORD
+** bitstream will need to insert the two ALIGNMENT bits before the message bytes
+**
+*/
 #include <stdint.h>
+#include <string.h>
 
-#include "config.h"
+#include "tty.h"
 
-#include "ringbuf.h"
-#include "cc1101.h"
-#include "transcoder.h"
+#include "radio.h"
+#include "message.h"
 #include "bitstream.h"
 
-/*********************************************************
-*
-* bitstream.c
-* ===========
-*
-* Provide an interface beween the radio interface (cc1101)
-* and transcode.c
-*
-* CC1101 produces and consumes bitstreams in the form of octets.
-*
-* The bitstreams are actually UART bitstreams that include
-* start/stop bits.  The CC1101 produces/consumes 5 octets
-* for every 4 UART bytes.
-*
-* The description that follows describes the bit stream as
-* seen by the radio and in paricular the bit order seen there
-*
-* The structure of a bitstream packet is
-*
-* [bit synch stream][Evo Header][Evo Message][Evo Trailer][bit synch steam]
-*
-* The [bit synch stream] is a continuos stream of alternating 0 and 1
-* i.e. an arbitrary length string of 0101010101...
-* This can be represented as a string of (5) 0xAA bytes
-* complete with start(s) and stop(p) bits
-*   <                   50 bits                      >
-*   01010101010101010101010101010101010101010101010101
-*   s<  AA  >ps<  AA  >ps<  AA  >ps<  AA  >ps<  AA  >p
-*
-* The Evo header is a constant fixed length string
-*   <                   50 bits                      >
-*   01111111110000000001011001100101010101010110010101
-*   s<  FF  >ps<  00  >ps<  CC  >ps<  AA  >ps<  CA  >p
-*
-* The Evo trailer is a single byte value
-*   < 10 bits>
-*   0101011001
-*   s<  AC  >p
-*
-* The Evo message is a manchester encoded sequence where each
-* byte of the actual message is generated from two bytes of
-* data from the bitstream.
-*   <      20 bits     >
-*   0MMMMMMMM10mmmmmmmm1
-*   s<  MSB >ps< lsb  >p
-*
-* The manchester codes are inserted into the bitstream as little-endian
-* octets
-*
-* The description above is in terms of UART bytes including the start/stop bits
-* The CC1101 technical documentation describes the bitream as pure octet
-* streams where the start/stop bits are just part of the stream.
-*
-* There are a couple of important observations concerning this when using the
-* hardware packet handler.
-*
-* The bit synchronisation preamble is described as an alternating sequence
-* of 1 and 0, the opposite of the description above.
-*
-* In TX mode the CC1101 will automatically transmit the specified
-* number of 10101010 premable octets followed by the 16 bit SYNC1/0 value.
-* Everything after that will be the bit stream specified by the data
-* supplied in the FIFO
-*
-*
-*************************************************************************
-*
-* Radio synchronisation of received bytes
-*
-* The CC1101 is configured to recognise the start of a packet by
-* scanning for a [bit synch pattern] to generate the bit clock
-* and then matching a 16 bit SYNC word providing octet alignment
-* for the following bits.
-*
-* The CC1101 strips the [bit synch pattern] and SYNC word then starts
-* delivering synchronised octets to bitstream via bs_accept_octet
-*
-* By careful selection of the value used for the CC1101 SYNC word
-* we can optimise the behaviour for bs_accept_octet
-*
-* The first octets to be processed by bs_accept_octet can be treated as
-* a further synchronisation pattern EVO_SYNCH
-*
-* The SYNC word should not be separated from the training bits
-* by any repeated 0s or 1s and EVO_SYNCH should terminate without
-* leaving any bits that cannot easily be considered as part of a data byte
-*
-* The interpretation of the bit stream at the beginning of each packet and
-* the proposed values for SYNC1/0 and EVO_SYNCH are
-*
-*               ><                 50 bits                        ><
-*      0101010101011111111100000000010110011001010101010101100101010xxxxxxxx10xxxxxxxx1
-*      s<  AA  >ps1<  FF  >ps<  00 >ps<  CC  >ps<  AA  >ps<  CA  >ps<  MM  >ps<  mm  >p
-*   N*10101010 >101<  SYNC1/0     ><           EVO_SYNCH          >< Evo message
-*              >101<  16 bits     ><           32 bits            ><   8  ><  8   >< ...
-*      preamble   ><  0xFF 0x00   ><      0x59 0x95 0x55 0x95     >
-*
-*  NOTES:
-*   SYNC Follows the preamble and must finish before EVO_SYNCH
-*        
-*   EVO_SYNCH is the 32 bits that span CC AA CA including surrounding stop/start pairs
-*             
-*/
 
-#define CC1101_SYNC 0xFF00     /* 1111 1111 0000 0000 */
-#define EVO_SYNCH   0x59955595 /* 0101 1001 1001 0101 0101 0101 1001 0101 */
-#define EVO_EOF     0xAC       /* 1010 1100 */
-#define BIT_TRAIN   0xAA       /* 1010 1010 */
+#define SYNC_WORD  0xFF00
+#define ALIGNMENT  0x02
+#define ALIGN_BITS 2
 
-static uint8_t evo_header[4];
-
-uint16_t bs_sync_word(void){ return CC1101_SYNC; }
-
-/*******************************************************
-* Manchester Encoding
-*
-* The [Evo Message] is encoded in the bitstream with a
-* Manchester encoding.  This is the only part of the
-* complete packet encoded in this way so we cannot
-* use the built in function of the CC1101
-*
-* While the bitstream is interpreted as a Big-endian stream
-* the manchester codes inserted in the stream are little-ndian
-* 
-* The Manchester data here is designed to correspond with the
-* Big-endian byte stream seen in the bitstream.
-*
-********
-* NOTE *
-********
-* The manchester decode process converts the data from 
-*     2x8 bit little-endian to 8 bit big-endian
-* The manchester encode process converts the data from 
-*     8 bit big-endian to 2x8 bit little-endian
-*
-* Since only a small subset of 8-bit values are actually allowed in
-* the bitstream rogue values can be used to identify some errors in 
-* the bitstream.
-*
-*/
-
-static uint8_t const man_encode[16] = {
-  0x55, 0x95, 0x65, 0xA5, 0x59, 0x99, 0x69, 0xA9,
-  0x56, 0x96, 0x66, 0xA6, 0x5A, 0x9A, 0x6A, 0xAA
-};
-
-static uint8_t man_decode[256];
-
-static void manchester_init(void) {
-  uint16_t i;
-  
-  for( i=0; i<sizeof( man_decode ); i++ )
-    man_decode[ i ] = 0xFF;
-
-  for( i=0; i<sizeof( man_encode ); i++ )
-    man_decode[ man_encode[i] ] = i;
-}
-
-static inline int manchester_code_valid( uint8_t code ) { return man_decode[code]!=0xFF ; }
-
-static inline uint8_t manchester_decode( uint8_t byte1, uint8_t byte2 ) { 
-  uint8_t decoded;
-  
-  decoded  = man_decode[byte1] << 4;
-  decoded |= man_decode[byte2];
-
-  return decoded;
-}
-
-static inline void manchester_encode( uint8_t value, uint8_t *byte1, uint8_t *byte2 ) {
-  *byte1 = man_encode[ ( value >> 4 ) & 0xF ];
-  *byte2 = man_encode[ ( value      ) & 0xF ];
-}
+uint16_t bs_sync_word(void) { return SYNC_WORD; }
 
 /*****************************************************************
 * NOTE: The following shift_register structure is sensitive to
@@ -203,539 +85,149 @@ union shift_register {
   };
 };
 
-/*******************************************************
-* RX byte processing
-*
-*
-* The overall structure of the Evo Message is
-* (header)(params)(cmd)(len)(payload)(chksum)
-*
-* Processing of the bitstream is only interested in
-* this structure in terms of overall validation and in
-* providing feedback to CC1101 during message RX
-*
-* (header) is a single byte that specifies the fields that are present
-*          in the (params) field and hence the length of (params)
-* (params) is a variable length byte string containing a variety
-*          of device addresses and optional parameters associated
-*          with the message
-* (cmd)    16 bit command value
-* (len)    8 bit value specifying the length of the following (payload)
-* (payload) variable length byte string associated with the command
-* (chksum) 8 bit checksum
-*
-* Octets received from cc1101 can only be of 10 specific
-* types characterised by the location of any start/stop
-* bits contained within them:
-*  9 sBBBBBBB
-*  8 psBBBBBB
-*  7 BpsBBBBB
-*  6 BBpsBBBB
-*  5 BBBpsBBB
-*  4 BBBBpsBB
-*  3 BBBBBpsB
-*  2 BBBBBBps
-*  1 BBBBBBBp
-*  0 BBBBBBBB
-*
-* Once EVO_SYNCH has been identified in the bitstream
-* subsequent octets received from the cc1101 will rotate
-* around either an even or odd 5 octet (40 bit) cycle of
-* these pattern to generate 4 manchester encoded bytes
-*
-* Even aligmnent
-* 8 psBBBBBB
-* 6 --------BBpsBBBB
-* 4 ----------------BBBBpsBB
-* 2 ------------------------BBBBBBps
-* 0 --------------------------------BBBBBBBB
-*
-* Odd alignment
-* 9  sBBBBBBB
-* 7  --------BpsBBBBB
-* 5  ----------------BBBpsBBB
-* 3  ------------------------BBBBBpsB
-* 1  --------------------------------BBBBBBBp
-*
-* Which cycle and the starting point in the cycle depends on
-* the alignment of the Evo Header within the delivered bytes
-* If CC1101 is correctly configured this should always be type 8
-*
-* The synchronised nature of the received bitstream means the
-* structure of the next octet to be received is always known
-* and hence the processing required for that octet is predicatable.
-* We know exactly which bits to keep or discard and when we will
-* have a complete manchester encoded byte available
-*
-* The job of the receive processing is to convert the manchester
-* encoded bytes, convert them and send them to transcoder.
-*
-*/
-
-// RX packet state
-static uint16_t rx_pktLen;		// Expected length of packet
-static uint16_t rx_octets;		// Number of octets received from cc1101 in this packet
-static uint16_t synch_bytes;	// Number of synchronised bytes processed
-static uint8_t  rx_checksum;
-static uint16_t decoded_bytes;	// Number of decoded message bytes derived from packet
-static uint8_t	decode_error;	// current decoded byte contains invalid manchester code
-static uint8_t	decoded;		// last decoded byte value
-static uint16_t payload_offset;	// location in decoded bytes of message payload
-
-// Start/stop bit stripping
-static union shift_register rx;
-static uint8_t rxBits;
-
-// Packet synchronisation state
-static uint32_t synch_pattern;
-static uint8_t  synch_bits;
-static uint16_t synchronised;
-
-static void rx_reset(void) {
-  rx_pktLen = 0xFFFF;
-  rx_octets = 0;
-  rx_checksum = 0;
-  synch_bytes = 0;
-  decoded_bytes = 0;
-  decode_error = 0;
-  decoded = 0;
-  payload_offset = 0xFFFF;
-}
-
-static inline void discard( uint8_t n ) { rx.bits <<= n ; }
-static inline void keep( uint8_t n ) { rx.reg <<= n ; }
-static void rx_data(void) { // Process the byte now in rx.data
-  static uint8_t byte1;
-  uint8_t byte = rx.data;
-
-  // All bytes received here should be manchester encoded values
-  decode_error <<= 4;	// Rotate out old decode errors
-  if( !manchester_code_valid( byte ) ) {
-    // The one valid exception is the Evo End of message byte
-    if( byte == EVO_EOF ) {
-      // TODO: is this expected?
-      // have we processed the payload and checksum
-      decoded = 0;
-      return;
-    } else {
-      decode_error |= 1;
-      byte = man_decode[15];	// Protect against subsequent decode - generate 0xF
-      transcoder_rx_status(TC_RX_MANCHESTER_DECODE_ERROR);
-    }
-  }
-
-  synch_bytes++;
-  if( synch_bytes & 1 ) {
-    // cache first byte of pair
-    byte1 = byte;
-    return;
-  }
-
-  // pass it to transcoder
-  decoded = manchester_decode( byte1, byte );
-  rx_checksum += decoded;
-  decoded_bytes++;
-
-  transcoder_rx_byte( decoded );
-}
-
-uint16_t bs_accept_octet( uint8_t bits ) {
- // tty_write_char('<'); tty_write_hex(bits); tty_write_char('>');
-
-  /*------------------------------------------------------------*/
-  /* Special values used to control the bitstream processing    */
-  /* The values used should never be seen in the received bytes */
-  /*------------------------------------------------------------*/
-  if( bits==0x00 ) { // start new packet
-    if( synchronised && decoded_bytes>0 ) {
-      // We've already told transcoder about current packet.
-      // better tell it the bad news
-      transcoder_rx_status(TC_RX_ABORTED);
-    }
-
-    rx_reset();
-
-    synchronised = BS_NOT_SYNCHRONISED;
-    synch_bits = 0;
-
-    transcoder_rx_status(TC_RX_START);
-    return synchronised;
-  }
-
-  if ( bits==0xFF ) { // end of current packet
-    if( synchronised && decoded_bytes>0 ) {
-      // There is an active packet - make sure it's cleaned up correctly
-
-      if( 1 ) { // TODO: determine condition
-        transcoder_rx_status( TC_RX_END );
-      } else {
-        transcoder_rx_status( TC_RX_ABORTED );
-      }
-    }
-
-    // Reset fro next packet
-    synchronised = BS_NOT_SYNCHRONISED;
-    return rx_octets;  // Tell CC1101 how many octets it gave us
-  }
-
-  // Real octet
-  rx_octets++;
-
-  // TODO: check the CC1101 isn't sending us spurious bytes beyond the end of the packet
-
-  if( synchronised == BS_ABORT ) {
-    return synchronised;
-  }
-
-  /*------------------------------------------------------------*/
-  /* If necessary, find the Evo frame header that synchronises  */
-  /* the received bytes                                         */
-  /*------------------------------------------------------------*/
-  if( !synchronised ) { // we still need to find the Evo header SYNCH_PATTERN
-    // Move another byte into the synch register
-    synch_pattern <<= 8;
-    synch_pattern |= bits;
-
-    // Check for synch pattern
-    if( synch_bits < 32 )
-      synch_bits += 8;
-    if( synch_bits==32 && synch_pattern==EVO_SYNCH )
-      synchronised = BS_SYNCHRONISED;
-
-    if( synchronised ) // Found it!
-      rxBits = 9; // First octet we need to discard start bit 
-
-    // TODO: Consider error if EVO_SYCH not found in a timely manner
-
-    return synchronised;
-  }
-
-  /*----------------------------------------------------*/
-  /* If we get here we're processing synchronised bytes */
-  /*----------------------------------------------------*/
-
-  // Load the lower half of the shift register
-  rx.bits = bits;
-
-  /* Observe that in the following switch the state implies
-   * the number of unused bits already in the shift register
-   * States 8&9 imply -2 and -1 bits because the first bits
-   * of the next octet will be discarded
-   *
-   * We don't bother to explicitly discard trailing bits in 2,1
-   * Every other case explicitly processes 8 bits
-   */
-  switch( rxBits ) {
-  // Even bit alignment
-  case 8:                       discard(2); keep(6); rxBits=6; break;
-  case 6: keep(2);  rx_data();  discard(2); keep(4); rxBits=4; break;
-  case 4: keep(4);  rx_data();  discard(2); keep(2); rxBits=2; break;
-  case 2: keep(6);  rx_data();  /* discard(2); */    rxBits=0; break;
-  case 0: keep(8);  rx_data();                       rxBits=8; break;
-
-  // Odd bit alignment
-  case 9:                       discard(1); keep(7); rxBits=7; break;
-  case 7: keep(1);  rx_data();  discard(2); keep(5); rxBits=5; break;
-  case 5: keep(3);  rx_data();  discard(2); keep(3); rxBits=3; break;
-  case 3: keep(5);  rx_data();  discard(2); keep(1); rxBits=1; break;
-  case 1: keep(7);  rx_data();  /* discard(1); */    rxBits=9; break;
-  }
-
-  if( decode_error ) {
-    // If we get a manchester decoding error
-    //   - keep sending data to transcoder for diagnostic purposes
-    //   - continue to process RX bytes from CC1101 so we can
-    //     attempt a clean end to the frame
-    synchronised = BS_MANCHESTER_ERROR;
-  }
-
-  // Now deal with some special conditions in the decoded byte stream
-
-  // First byte is Evo Message header which tells us where payload begins
-  if( decoded_bytes==1 && payload_offset==0xFFFF ) {
-    if( !decode_error ) {
-      // Just received the (header), work out when to expect (len)
-      //              hdr  params                           cmd len
-      payload_offset = 1 + transcoder_param_len( decoded ) + 2 + 1 ;
-	  uint16_t len = payload_offset;
-      len += 1;		  // minimum payload
-      len += 1;		  // checksum
-      len *= 2;		  // Manchester encoded
-      len += 1;		  // EVO_EOF
-	  
-      len *= 10;      // Convert to bits including start/stop
-      len += 7;       // allow for padding with bit training
-
-      len /= 8;       // convert to octets
-      len += 4;       // EVO_SYNCH we've already received
-
-      // Special case return
-      return len;	  // Always at least 19: evo_synch[4] hdr[2.5] cmd[5] len[2.5] pl[1.25] csum[2.5] evo_eof[1.25]
-    } else {
-      synchronised = BS_ABORT; // can't work out packet length now
-    }
-  }
-
-  // Just decoded the payload len so we can work out how long the radio packet should be
-  if( decoded_bytes==payload_offset && rx_pktLen==0xFFFF ) {
-    if( !decode_error ) {
-      // how many more bytes do we expect
-      rx_pktLen  = decoded;   // payload bytes
-      rx_pktLen += 1;		  // checksum
-      rx_pktLen *= 2;		  // Manchester encoded
-      rx_pktLen += 1;		  // EVO_EOF
-
-      // Convert to bits outstanding
-      rx_pktLen *= 10; 	      // Convert to bits including start/stop
-      rx_pktLen -= rxBits;    // bits still in shift register (accounted for in rx_octets)
-      if( rxBits > 7 )
-        rx_pktLen += 10;      // next octet has leading stop/start bits
-      rx_pktLen += 7;         // allow for padding with bit training
-
-      // And finanly work out the total packet len
-      rx_pktLen /= 8;         // convert to octets
-      rx_pktLen += rx_octets; // Add in what we've already received
-
-      // Special case return
-      return rx_pktLen;	  // Always at least 19: evo_synch[4] hdr[2.5] cmd[5] len[2.5] pl[1.25] csum[2.5] evo_eof[1.25]
-    } else {
-      synchronised = BS_ABORT;  // Can't work out packet length now
-    }
-  }
-
-  // Have we reached the end of the packet?
-  if( rx_octets==rx_pktLen ) {
-    if( rx_checksum != 0 )
-      transcoder_rx_status(TC_RX_CHECKSUM_ERROR);
-
-    return BS_END_OF_PACKET;
-  }
-
-  if( synchronised==BS_ABORT )
-    transcoder_rx_status(TC_RX_ABORTED);
-
-  return synchronised;
-}
-
-/****************************************************************************************
-* TX byte processing
-*
-* The CC1101 automatically transmits bit preamble octets and the SYNC1/0 value
-*
-* At the beginning of a packet we will have to insert the 32 bits of EVO_SYNCH
-* Hence the first data byte of the Evo Message should be type 8 and subsequent
-* bytes should follow the Even alignement cycle.
-*
-* The data bytes supplied by transcoder are the little-endian values
-* of the Evo Message.  Each byte must be converted to the appropriate 16 bit
-* big-endian manchester encoded equivalent and then added to the TX bitsream
-* inserting start/stop bits as necessary
-*
-* If the message does not convert to an exact number of octets we need to 
-* append training bits.
-*
-* When the CC1101 terminates TX it will transmit a [training bit stream]
-*
-*/
-
-static uint16_t txMsglen; // Length of message to be transmitted
-static uint16_t txBytes;  // Number of bytes processed
-static uint16_t txPktlen; // Length of packet to be transmitted
-static uint16_t txOctets; // Nnmber of octets transferred to FIFO
-
-RINGBUF( TX_MSG,128 );
-
-// Start/stop insertion control
-static union shift_register tx;
-static uint8_t txBits;   // Number of valid bits in shift register
-
-static inline void insert_p(void)  { tx.data <<= 1 ; tx.data |= 0x01; }
-static inline void insert_s(void)  { tx.data <<= 1 ; }
-static inline void insert_ps(void) { insert_p(); insert_s(); }
-static inline void send( uint8_t n ) { tx.reg <<= n ; }
-static uint8_t tx_data(void) {
-   txOctets++;
-   return cc_put_octet( tx.data );
-}
-
-static uint8_t tx_byte( uint8_t byte ) { // convert byte to octets
-  uint8_t count = 0;
-
-  tx.bits = byte;
-
-  // For each 4 bytes of data we send 5 octets of bitstream
-  // so in each state cycle there is one case which generates
-  // two octets
-  switch( txBits )
-  {
-  // Even bit alignment
-  case 0: insert_ps(); send(6); count += tx_data(); send(2); txBits=2; break;
-  case 2: insert_ps(); send(4); count += tx_data(); send(4); txBits=4; break;
-  case 4: insert_ps(); send(2); count += tx_data(); send(6);   // Fall through
-  case 6: insert_ps();          count += tx_data();          txBits=8; break;
-  case 8:              send(8); count += tx_data();          txBits=0; break;
-
-  // Odd bit alignment
-  case 1: insert_p();  send(7); count += tx_data(); send(1); txBits=3; break;
-  case 3: insert_ps(); send(5); count += tx_data(); send(3); txBits=5; break;
-  case 5: insert_ps(); send(3); count += tx_data(); send(5); txBits=7; break;
-  case 7: insert_ps(); send(1); count += tx_data(); send(7);   // Fall through
-  case 9: insert_s();           count += tx_data();          txBits=1; break;
-  }
-
-  return count;
-}
-
-static uint8_t encode_byte( uint8_t msgByte ) {
-  uint8_t count=0;
-  uint8_t byte0, byte1;
-
-  manchester_encode( msgByte, &byte0, &byte1 );
-  count += tx_byte( byte0 );
-  count += tx_byte( byte1 );
-
-  return count;
-}
-
-/***********************************************************
-* Radio TX pull interface
-*/
-
-enum tx_state {
-  TX_IDLE,        // No TX in progress
-  TX_WAITING,     // TX requested but not active yet
-  TX_ACTIVE,      // TX frame has started
-  TX_IN_FIFO,     // All of data in FIFO
-  TX_CLOSING,     // Waiting for end of frame
-  TX_MAX
-} txState = TX_IDLE;
-
-// Called from radio ISR to see if there's a TX pending
-uint8_t bs_enable_tx(void) {
-  if( txState == TX_WAITING )
-    return 1;
-
-  return 0;
-}
-
-// Called from radio ISR at beginning of TX frame
-uint16_t bs_start_tx(void) {
-  uint16_t pktLen = 0;
-
-  if( txState == TX_WAITING ) {
-    pktLen = txPktlen;
-    txState = TX_ACTIVE;
-  }
-
-  return pktLen;
-}
-
-// Called from radio ISR when it allows more data
-uint8_t bs_process_tx( uint8_t space ) {
-
-  if( txState == TX_IDLE )
-    return 0;
-
-  while( space && ( txOctets < sizeof(evo_header) ) ) {
-    // Send Evo header directly to radio
-    tx.data = evo_header[txOctets];
-    space -= tx_data();
-  }
-
-  if( txBytes < txMsglen ) {
-    // Transfer message to radio
-    while( space > 5 ) {
-      // Room for a message byte and Evo Trailer/padding
-      if( !rb_empty( &TX_MSG.rb ) )
-      {
-        uint8_t msgByte;
-
-        msgByte = rb_get( &TX_MSG.rb );
-        space -= encode_byte( msgByte );
-        txBytes++;
-      }
-      else
-        break;
-    }
-  }
-
-  if( txBytes == txMsglen ) {
-    // Append Evo trailer
-    if( txOctets < txPktlen ) {
-      // space test above guarantees room
-      tx_byte( EVO_EOF );
-      while( txOctets < txPktlen )
-        tx_byte(0xAA); // Padding
-    }
-  }
-
-  if( txOctets == txPktlen ) {
-    // Everything is now in FIFO
-    if( txState == TX_ACTIVE )
-      txState = TX_CLOSING;
-  }
-
-  return ( txState == TX_CLOSING );
-}
-
-// Called from radio ISR at end of TX frame
-void bs_end_tx(void) {
-  txState = TX_IDLE;
-  // TODO: tell transcoder we've finished
-}
-
-/***********************************************************
-* Transcoder TX interface
-*/
-
-uint8_t bs_send_message( uint16_t msgLen ) {
+struct bs_frame {
+  uint16_t nOctets;
   uint16_t pktLen;
+  
+  uint8_t nBytes;
+  uint8_t msgLen;
 
-  if( txState != TX_IDLE )
-    return 0;
+  uint8_t nBits;	// number of valid data bits in shift register
+  union shift_register sr;
+};
 
-  pktLen  = msgLen;   // Message bytes
-  pktLen *= 2;        // Manchester codes
-  pktLen *= 10;       // Message bits
-  pktLen += 32;       // Evo Header
-  pktLen += 10;       // Evo Trailer (inc start/stop)
-  pktLen += 7;        // Padding
-  pktLen /= 8;        // octets
+/**************************************************************************
+* convert message bytes to packet octets
+*/
+static uint16_t bytes2octets(uint8_t bytes) {
+  uint16_t pktBits;
+  
+  pktBits = bytes;
+  pktBits *= 10;          // bits including start/stop
+  pktBits += ALIGN_BITS;
+  pktBits += 7;           // Round up
 
-  txMsglen = msgLen;
-  txBytes = 0;
-  txPktlen = pktLen;
-  txOctets = 0;
-  txBits = 0;  // First thing we need to do is insert Stop/Start
-
-  txState = TX_WAITING;
-
-  cc_tx_trigger();
-
-  return 1;
+  return pktBits/8;
 }
 
-uint8_t bs_send_data( uint8_t msgByte ) {
-  if( rb_full( &TX_MSG.rb ) )
-    return 0;
+/**************************************************************************
+* RX bitstream
+* Radio pushs octets to bitstream
+*/
 
-  rb_put( &TX_MSG.rb, msgByte );
+static struct bs_frame rx;
+static void bs_rx_reset(void) { memset( &rx, 0, sizeof(rx) ); }
 
-  if( txState != TX_IDLE )
-    cc_tx_trigger();
+static inline void discard(uint8_t n) { rx.sr.bits <<= n; } 
+static inline void keep(uint8_t n ) { rx.sr.reg <<= n; } 
+static inline void rxData(void) { msg_rx_byte(rx.sr.data); rx.nBytes++; }
 
-  return 1;
+void bs_rx_sof(void) {
+//tty_write_char('(');
+  bs_rx_reset();
+  msg_rx_sof();
 }
 
-/******************************************************/
+void bs_rx_rssi(uint8_t rssi){
+  msg_rx_rssi(rssi);
+}
 
-void bs_init(void)
+void bs_rx_timeout(void) {
+  msg_rx_timeout();
+}
+
+void bs_rx_eof(void) {
+  bs_rx_octet( 0xAA );	// Flush any outstanding bits
+  msg_rx_eof();
+//tty_write_char(')');
+}
+
+void bs_rx_octet(uint8_t octet)
 {
-  uint8_t i;
-  uint32_t hdr ;
-  for( i=4, hdr=EVO_SYNCH ; i>0 ; i--, hdr>>=8 )
-    evo_header[i-1] = hdr & 0xFF;
+  rx.sr.bits = octet;
+//  tty_write_char('.');
 
-  rb_reset( &TX_MSG.rb );
-  manchester_init();
+  if( rx.nOctets==0 ) { // first octet - deal with alignment
+    discard(ALIGN_BITS);
+	  discard(1);           // discard start bit
+	  keep(5);
+	  rx.nBits = 5;
+  } else {
+    // Every 5 RX octets contain 4 message bytes
+    switch( rx.nBits ) { // Consume the 8 bits of this octet
+    case 9:                    discard(1); keep(7); rx.nBits = 7; break;
+    case 7: keep(1); rxData(); discard(2); keep(5); rx.nBits = 5; break;
+    case 5: keep(3); rxData(); discard(2); keep(3); rx.nBits = 3; break;
+    case 3: keep(5); rxData(); discard(2); keep(1); rx.nBits = 1; break;
+    case 1: keep(7); rxData(); discard(1);          rx.nBits = 9; break;
+    }
+  };
+
+  rx.nOctets++;
 }
+
+void bs_rx_msgLen(uint8_t bytes) {
+  rx.msgLen = bytes;
+  rx.pktLen = bytes2octets(bytes);
+  
+  radio_rx_pktLen(rx.pktLen);
+}
+
+/**************************************************************************
+* TX bitstream
+* Radio pulls octets from bitstream
+*/
+
+static struct bs_frame tx;
+static void bs_tx_reset(void) { memset( &tx, 0, sizeof(tx) ); }
+
+static inline void add_S(void) { tx.sr.bits >>=1 ;                  }
+static inline void addP_(void) { tx.sr.bits >>=1 ; tx.sr.bits |= 0x80; }
+static inline void addPS(void) { addP_(); add_S(); }
+static inline void send(uint8_t n) { tx.sr.reg >>= n; } 
+static inline void txOctet(void) { radio_tx_octet( tx.sr.bits); tx.nOctets++; }
+
+void bs_tx_sof(void) {
+  bs_tx_reset();
+  radio_tx_sof();
+}
+
+void bs_tx_eof(void) {
+  radio_tx_eof();
+}
+
+void bs_tx_octet(void)
+{
+  if( tx.nOctets==0 ) { // first octet - deal with alignment
+    tx.sr.data = ALIGNMENT;
+    send(ALIGN_BITS);
+	  add_S();
+	  tx.nBits = 3;
+  } 
+
+  // Pull next byte
+  tx.sr.data = msg_tx_byte();
+  
+  // We generate 5 octets for evry 4 data bytes
+  switch( tx.nBits ) { // Consume the 8 bits of this byte
+  case 1: send(7); txOctet(); send(1); addPS(); tx.nBits = 9; break;
+  case 3: send(5); txOctet(); send(3); addPS(); tx.nBits = 5; break;
+  case 5: send(3); txOctet(); send(5); addPS(); tx.nBits = 7; break;
+  case 7: send(1); txOctet(); send(7); add_S(); 
+          // Fall through for next octet we already have available
+                   txOctet();          addP_(); tx.nBits = 1; break;
+  };
+
+  tx.nBytes++;
+  
+  if( tx.msgLen && tx.msgLen==tx.nBytes )
+    bs_tx_eof();
+}
+
+void bs_tx_msgLen(uint8_t bytes) {
+  tx.msgLen = bytes;
+  tx.pktLen = bytes2octets(bytes);
+
+//  radio_tx_pktLen(rx.pktLen);
+}
+

@@ -1,50 +1,15 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "tty.h"
+#include "trace.h"
 
 #include "config.h"
 #include "errors.h"
 #include "tty.h"
-#include "bitstream.h"
-#include "ringbuf.h"
+//#include "bitstream.h"
+//#include "ringbuf.h"
+#include "message.h"
 #include "transcoder.h"
-
-
-#define S_HEADER     0
-#define S_ADDR0      1
-#define S_ADDR1      2
-#define S_ADDR2      3
-#define S_PARAM0     4
-#define S_PARAM1     5
-#define S_CMD        6
-#define S_LEN        7
-#define S_PAYLOAD    8
-#define S_CHECKSUM   9
-#define S_COMPLETE  10
-#define S_ERROR     11
-
-static const uint8_t HEADER_FLAGS[16] = {
-  0x0F, 0x0C, 0x0D, 0x0B,
-  0x27, 0x24, 0x25, 0x23,
-  0x47, 0x44, 0x45, 0x43,
-  0x17, 0x14, 0x15, 0x13
-};
-
-inline uint8_t is_information(uint8_t flags) { return flags & 0x20; }
-inline uint8_t is_request(uint8_t flags)     { return flags & 0x08; }
-inline uint8_t is_response(uint8_t flags)    { return flags & 0x10; }
-inline uint8_t is_write(uint8_t flags)       { return flags & 0x40; }
-inline uint8_t has_addr0(uint8_t flags)      { return flags & 0x01; }
-inline uint8_t has_addr1(uint8_t flags)      { return flags & 0x02; }
-inline uint8_t has_addr2(uint8_t flags)      { return flags & 0x04; }
-inline uint8_t has_param0(uint8_t header)    { return header & 0x02; }
-inline uint8_t has_param1(uint8_t header)    { return header & 0x01; }
-
-inline void set_information(uint8_t *flags) { *flags |= 0x20; }
-inline void set_request(uint8_t *flags)     { *flags |= 0x08; }
-inline void set_response(uint8_t *flags)    { *flags |= 0x10; }
-inline void set_write(uint8_t *flags)       { *flags |= 0x40; }
 
 static write_str_fn write_str;
 static send_byte_fn send_byte;
@@ -54,6 +19,7 @@ void transcoder_init(write_str_fn w, send_byte_fn s) {
   send_byte = s;
 }
 
+#if 0
 void transcoder_accept_inbound_byte(uint8_t b, uint8_t status) {
   static uint8_t checksum = 0;
   static uint8_t state = S_HEADER;
@@ -337,8 +303,10 @@ static uint8_t pack_flags(uint8_t flags) {
   }
   return 0xFF;
 }
+#endif
 
 void transcoder_accept_outbound_byte(uint8_t b) {
+#if 0
   static uint8_t flags = 0;
   static uint32_t addrs[3];
   static uint8_t field = 0;
@@ -478,4 +446,171 @@ tty_write_char('\n');
 
   p = 0;
   field++;
+#endif
 }
+
+static void tty_write_dec(uint32_t value, uint8_t size) {
+  char buf[10];
+
+  buf[size] = '\0';
+  while( size-- ) {
+    buf[size] = '0' + value%10;
+	value /= 10;
+  }
+
+  tty_write_str(buf);
+}
+
+static char const * const msgType[4] = { "RQ", " I", " W", "RP" };
+
+static uint8_t print_pkt( uint8_t type, uint8_t rcvd ) {
+  uint8_t n = 0;
+  tty_write_char( ' ' );
+  if( rcvd ) {
+    tty_write_str( msgType[type] );
+    n = 1;
+  } else {
+    tty_write_str( "??" );
+  }
+  return n;
+}
+
+static uint8_t print_addr( uint8_t *addr, uint8_t valid, uint8_t rcvd ) {
+  uint8_t n = 0;
+  tty_write_char(' ');
+  if( valid ) {
+    if( rcvd ) {
+      uint32_t dev = ( (uint32_t)addr[0]<<16 ) 
+                   + ( (uint32_t)addr[1]<< 8 ) 
+                   + ( (uint32_t)addr[2]     );
+
+      tty_write_dec( ( dev >> 18 ) & 0x3f, 2 );
+      tty_write_char(':');
+      tty_write_dec( ( dev & 0x3FFFF ), 6 );
+      n = 3;
+    } else {
+      tty_write_str("??:??????");
+    }
+  } else {
+    tty_write_str("--:------");
+  }
+  return n;
+}
+
+static uint8_t print_param( uint8_t param, uint8_t valid, uint8_t rcvd ) {
+  uint8_t n = 0;
+  tty_write_char(' ');
+  if( valid ) {
+    if( rcvd )
+    {
+      tty_write_dec( param, 3 );
+      n = 1;
+    } else {
+      tty_write_str("???");
+    }      
+  } else {
+    tty_write_str("---");
+  }
+  return n;
+}
+
+static void print_rssi( uint8_t rssi, uint8_t valid ) {
+  print_param( rssi, valid, 1 );
+};
+
+static uint8_t print_opcode( uint8_t *opcode, uint8_t rcvd ) {
+  uint8_t n = 0;
+  tty_write_char(' ');
+  if( rcvd ) {
+    tty_write_hex(opcode[0]);tty_write_hex(opcode[1]);
+    n = 2;
+  } else {
+    tty_write_str("????");
+  }
+  return n;
+}
+
+static uint8_t print_len( uint8_t len ) {
+  uint8_t n = 0;
+  n = print_param( len, len>0, 1 );
+  return n;
+}
+
+static uint8_t print_payload( uint8_t *payload, uint8_t len ) {
+  uint8_t n = 0;
+  tty_write_char(' ');
+  while( len ) {
+    tty_write_hex( *payload );
+	  payload++;
+	  len--;
+    n++;
+  }
+  return n;
+}
+
+static void print_error( uint8_t error ) {
+  if( error ) {
+    tty_write_str(" * ");
+    switch(error) {
+    case MSG_TIMEOUT:   tty_write_str("Timeout");           break;
+    case MSG_SIG_ERR:   tty_write_str("Bad signature");     break;
+    case MSG_TYPE_ERR:  tty_write_str("Bad Type");          break;
+    case MSG_MANC_ERR:  tty_write_str("Mancherter decode"); break;
+    case MSG_CSUM_ERR:  tty_write_str("Checksum");          break;
+    case MSG_LEN_ERR:   tty_write_str("Bad Length");        break;
+    }   
+    tty_write_str(" *");
+  }
+}
+
+void tc_print_message( struct message *msg ) {
+  uint8_t flags = msg->flags;
+  uint8_t flags2 = msg->flags2;
+  uint8_t bytes = msg->bytes;
+  
+  if( TRACE(TRC_DETAIL) ) {
+    tty_write_hex( msg->idx );
+    tty_write_char(':');tty_write_hex( msg->flags );
+    tty_write_char(':');tty_write_hex( msg->flags2 );
+    tty_write_char(':');tty_write_hex( msg->bytes );
+    tty_write_char(':');tty_write_hex( msg->error );
+    tty_write_str("\r\n");
+  }
+  
+  print_rssi( msg->rssi, has_rssi(flags) );
+  bytes -= print_pkt( pkt_type( flags ), flags2&F_TYPE );  
+  bytes -= print_param( msg->param[0], has_param0( flags ), flags2&F_PARAM0 );
+//  bytes -= print_param( msg->param[1], has_param1( flags ), flags2&F_PARAM1 );
+  bytes -= print_addr( msg->addr[0], has_addr0( flags ), flags2&F_ADDR0 );
+  bytes -= print_addr( msg->addr[1], has_addr1( flags ), flags2&F_ADDR1 );
+  bytes -= print_addr( msg->addr[2], has_addr2( flags ), flags2&F_ADDR0 );
+  bytes -= print_opcode( msg->opcode, flags2&F_OPCODE );
+  bytes -= print_len( msg->len );
+  bytes -= print_payload( msg->payload, msg->len );
+  
+  print_error( msg->error );
+  
+  tty_write_str("\r\n");
+}
+
+static struct message *rxMsgs[8];
+static uint8_t rxIn=0;
+static uint8_t rxOut=0;
+
+void transcoder_rx_frame( struct message *msg ) {
+  rxMsgs[rxIn++] = msg;
+  rxIn %= 8;
+};
+
+void transcoder_work(void) {
+  struct message *rxMsg = NULL;
+  if( rxIn != rxOut ) {
+    rxMsg = rxMsgs[rxOut++];
+    rxOut %= 8;
+  }
+  
+  if( rxMsg ) {
+    tc_print_message( rxMsg );
+    msg_rx_done( rxMsg );
+  }
+};

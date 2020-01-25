@@ -11,6 +11,10 @@
 #include <avr/pgmspace.h>
 #include <util/delay.h>
 
+#include "trace.h"
+
+//#define ENABLE_TX
+
 #include "tty.h"
 
 #include "spi.h"
@@ -214,50 +218,98 @@ static uint8_t cc_read_fifo(uint8_t *buffer, uint8_t flush )
   return nOctet;  
 }
 
-
-static uint16_t frameLen;
-static uint16_t rxBytes;
+static volatile uint16_t frameLen;
+static volatile uint16_t rxBytes;
+static volatile uint8_t nOctet;
 
 static void read_fifo(uint8_t readAll)
 {
   uint8_t buffer[8];
   uint8_t *data=buffer;
-  uint8_t nOctet = cc_read_fifo( data, readAll );
-
-  while( nOctet-- )
-  {
-    uint16_t bs_status = bs_accept_octet( *data );
-    data++;
+  
+  nOctet = cc_read_fifo( data, readAll );
+  while( nOctet-- ) {
     rxBytes++;
-
-    if( bs_status == BS_END_OF_PACKET ) { 
-      readAll = 1;
-    } else if( bs_status > BS_MAX_STATUS ) { // new packet length
-      frameLen = bs_status;
-      cc_set_pktLen( frameLen, rxBytes+nOctet );	// Include data we've taken from FIFO but not processed
-    }
-  }
+    bs_rx_octet( *data );
+    data++;
+  };
 
   cc_check_pktLen( rxBytes );
+}
+
+void radio_rx_pktLen(uint16_t octets) {
+  cc_set_pktLen( octets, rxBytes+nOctet );
 }
 
 //----------------------------------------------
 static void detect_frame_start(void);
 static void detect_frame_end(void);
 static void detect_fifo_rx_high(void);
+#if defined(ENABLE_TX)
 static void detect_fifo_tx_low(void);
+#endif
 
 static void cc_enable_rx(void);
 static void cc_start_rx(void);
 static void cc_process_rx(void);
 static void cc_end_rx(void);
 
+#if defined(ENABLE_TX)
 static void cc_enable_tx(void);
 static void cc_start_tx(void);
 static void cc_process_tx(uint8_t writeAll);
 static void cc_end_tx(void);
 
 static uint8_t tx_pending = 0;
+#endif
+
+//----------------------------------------------
+static uint8_t rx_timer;
+
+#define CLOCK_PRESCALER ( (1<<CS02) | ( 1<<CS00) )
+#define CLOCK_INT_ENBL  ( 1<<OCIE0A )
+static void cc_rx_timeout_start(void) {
+  TCNT0 = 0;
+  TIFR0 = 0;
+}
+
+static void cc_rx_timeout_enable(void) {
+  TCCR0B |= CLOCK_PRESCALER;
+  TIMSK0 |= CLOCK_INT_ENBL;
+}
+
+static void cc_rx_timeout_disable(void) {
+  TCCR0B &= ~CLOCK_PRESCALER; 
+  TIMSK0 &= ~CLOCK_INT_ENBL;
+}
+
+static void cc_rx_timeout_init(void) {
+  uint32_t temp;
+  
+  uint8_t sreg = SREG;
+  cli();
+
+  TCCR0A = ( 1<<WGM01 ); // CTC no output pins
+  TCCR0B = 0;
+  
+  temp = F_CPU / 1024;  // clock counts/second
+  temp *= 2;            // 2 mSec
+  rx_timer = temp/1000; // clock counts for 2 mSec
+
+  OCR0A = rx_timer;
+  
+  SREG = sreg;
+}
+
+ISR(TIMER0_COMPA_vect) {
+  if( TRACE(TRC_RADIO) )
+    tty_write_char('#');
+  
+  if( frame_state==FRAME_RX ) {
+    spi_strobe( CC1100_SIDLE );
+    bs_rx_timeout();
+  }
+}
 
 //----------------------------------------------
 static void cc_enable_rx(void) {
@@ -274,41 +326,58 @@ static void cc_enable_rx(void) {
 
 // Called From Frame interrupt when RX start detected
 static void cc_start_rx(void) {
-//tty_write_char('{');
+  uint8_t rssi;
+
+  if( TRACE(TRC_RADIO) )
+    tty_write_char('{');
 
   frameLen = 0xFFFF;
   rxBytes = 0;
 
-  bs_accept_octet(0x00);
+  bs_rx_sof();
+
+  cc_rx_timeout_enable();
+  cc_rx_timeout_start();
+
+  rssi = cc_read( CC1100_RSSI );
+  bs_rx_rssi( rssi );
 }
 
 static void cc_process_rx(void) {
-//tty_write_char('%');
+  if( TRACE(TRC_RADIO) )
+    tty_write_char('%');
 	
+  cc_rx_timeout_start();
   read_fifo(0);      // Leave at least 1 byte in FIFO (see errata)
   //cc_process_tx(0);  // pull pending TX data
 }
 
 static void cc_end_rx(void) {
+  cc_rx_timeout_disable();
+  
   read_fifo(1);  // We can empty FIFO now
-  bs_accept_octet(0xFF);
+  bs_rx_eof();
 
-//tty_write_char('}');
+  if( TRACE(TRC_RADIO) )
+    tty_write_char('}');
 
+#if defined(ENABLE_TX)
   if( tx_pending )
     cc_enable_tx();
   else
+#endif
     cc_enable_rx();
 }
 
 //----------------------------------------------
+#if defined(ENABLE_TX)
 
 static void cc_enable_tx(void) {
-  if( bs_enable_tx() ) {
+  //if( bs_enable_tx() ) {
     // Kick the radio. If it can detect RX activity nothing will happen
     // Don't do anything else until we actually see a TX frame
     spi_strobe( CC1100_STX );
-  }
+  //}
 }
 
 static void cc_start_tx(void) {
@@ -332,6 +401,10 @@ static void cc_start_tx(void) {
   tx_pending = 0;
 }
 
+void radio_tx_pktLen(uint16_t octets) {
+  cc_set_pktLen( octets, rxBytes+nOctet );
+}
+
 // Called whenever we have opportunity to update CC1101
 static void cc_process_tx( uint8_t writeAll ) {
   // use txSpace to influence how much work we allow BS to do
@@ -351,8 +424,9 @@ static void cc_process_tx( uint8_t writeAll ) {
 static void cc_end_tx(void) {
   cc_enable_rx();
 
-  bs_end_tx();
+  bs_tx_eof();
 }
+#endif
 
 /****************************************************************
 * Frame Interrupt
@@ -383,13 +457,15 @@ FRAME_INT_ENTER
     switch( CC_STATE(status) ) {
       case CC_STATE_RX:
         cc_start_rx();
-		detect_frame_end();
+		    detect_frame_end();
         frame_state = FRAME_RX;
         break;
 
       case CC_STATE_TX:
+#if defined(ENABLE_TX)
         cc_start_tx();
-		detect_frame_end();
+#endif
+		    detect_frame_end();
         frame_state = FRAME_TX;
         break;
     }
@@ -402,7 +478,9 @@ FRAME_INT_ENTER
     break;
 
   case FRAME_TX:  // End of TX frame;
+#if defined(ENABLE_TX)
     cc_end_tx();
+#endif
     detect_frame_start();
     frame_state = FRAME_IDLE;
     break;
@@ -411,7 +489,7 @@ FRAME_INT_LEAVE
 }
 
 /****************************************************************
-* FIFO Itterrupt
+* FIFO Interrupt
 */
 // Signal asserts when FIFO is at or above threshhold
 // Signal clears when FIFO drained below threshhold
@@ -422,18 +500,21 @@ static void detect_fifo_rx_high(void) {
   EICRA |=  ( 1 << FIFO_INT_ISCn0 );   // ... rising edge
 }
 
+#if defined(ENABLE_TX)
 // Configure FIFO interrupt to detect TX activity
 static void detect_fifo_tx_low(void) {
   EICRA |=  ( 1 << FIFO_INT_ISCn1 );   // Set edge trigger
   EICRA &= ~( 1 << FIFO_INT_ISCn0 );   // ... falling edge
 }
-
+#endif
 ISR(FIFO_INT_VECT) {
   // Fifo Interrupt
 FIFO_INT_ENTER
   switch( frame_state ) {
   case FRAME_RX:    cc_process_rx();   break;
+#if defined(ENABLE_TX)
   case FRAME_TX:    cc_process_tx(1);  break;
+#endif
   }
 FIFO_INT_LEAVE
 }
@@ -454,6 +535,7 @@ FIFO_INT_LEAVE
 */
 
 ISR(SW_INT_VECT) {
+#if defined(ENABLE_TX)
   switch( frame_state ) {
     case FRAME_IDLE:
       cc_process_tx( 1 );
@@ -466,6 +548,7 @@ ISR(SW_INT_VECT) {
       // Rely on RX activity to process data
       break;
   }
+#endif
 }
 
 static void cc_tx_init(void) {
@@ -478,6 +561,7 @@ void cc_tx_trigger(void) {
   SW_INT_PORT |= SW_INT_PIN;
 }
 
+#if defined(ENABLE_TX)
 uint8_t cc_put_octet( uint8_t octet ) { // Transfer to FIFO
   cc_write( CC1100_FIFO, octet );
 
@@ -486,6 +570,7 @@ uint8_t cc_put_octet( uint8_t octet ) { // Transfer to FIFO
 
   return 1;
 }
+#endif
 
 static void cc_enter_rx_mode(void) {
   EIMSK &= ~INT_MASK;            // Disable interrupts
@@ -528,10 +613,9 @@ void cc_init(void) {
   uint16_t syncWord = bs_sync_word();
   cc_write( CC1100_SYNC1, ( syncWord>>8 ) & 0xff );
   cc_write( CC1100_SYNC0, ( syncWord    ) & 0xff );
+
+  cc_rx_timeout_init();
   
   cc_tx_init();     // Initialise Softwre TX  interrupt
   cc_enter_rx_mode();
-}
-
-void cc_work(void) {
 }

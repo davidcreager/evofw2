@@ -7,6 +7,7 @@
 #include "cc1101.h"
 #include "led.h"
 #include "transcoder.h"
+#include "message.h"
 
 void main_init(void) {
   // OSCCAL=((uint32_t)OSCCAL * 10368) / 10000;
@@ -22,9 +23,10 @@ void main_init(void) {
   spi_init();
   
   transcoder_init(&tty_write_str, 0);//&driver_send_byte);
-  bs_init();
+//  bs_init();
   tty_init(&transcoder_accept_outbound_byte);
   cc_init();
+  msg_init();
   led_off();
   sei();
 }
@@ -32,7 +34,6 @@ void main_init(void) {
 void main_work(void) {
   transcoder_work();
   tty_work();
-  cc_work();
 }
 
 #ifdef NEEDS_MAIN
