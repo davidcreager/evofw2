@@ -127,6 +127,16 @@ static const uint8_t header_flags[16] = {
 };
 
 static uint8_t get_hdr_flags(uint8_t header ) {
+  uint8_t flags = 0;
+  uint8_t lookup = ( header>>2 ) & 0x0F;
+  if( header!=0xFF && lookup < sizeof(header_flags) )
+    flags = header_flags[lookup];
+
+  if( TRACE(TRC_DETAIL) ) {
+    tty_write_hex(header);
+    tty_write_hex(flags);
+  }
+    
   return header_flags[ ( header>>2 ) & 0x0F ];
 }
 
@@ -223,7 +233,7 @@ void msg_rx_eof(void) {
 }
 
 void msg_rx_byte(uint8_t byte) {
-  uint8_t decoded;
+  uint8_t decoded,flags;
 
   if( !rx )
     return;
@@ -285,7 +295,14 @@ void msg_rx_byte(uint8_t byte) {
 
   switch( rx->state ) {
   case S_HEADER:
-    rx->flags |= get_hdr_flags(decoded);
+    flags = get_hdr_flags(decoded);
+    if( flags==0 ) {
+      rx->state = S_ERROR;
+      rx->error = MSG_TYPE_ERR;
+      return;
+    }
+
+    rx->flags |= flags;
     if( hdr_param0(decoded) )set_param0( &rx->flags );
     if( hdr_param1(decoded) )set_param1( &rx->flags );
 
