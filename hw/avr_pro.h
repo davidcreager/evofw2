@@ -16,7 +16,7 @@
 #define SPI_MOSI    3
 #define SPI_MISO    4
 #define SPI_SCLK    5
-#define SPI_CLK_RATE 250000
+#define SPI_CLK_RATE 2000000
 
 // Frame detect interrupt
 #define FRAME_INT        ( 1 << INT0 )
