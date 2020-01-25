@@ -187,12 +187,12 @@ void msg_rx_sof(void) {
   if( msg ) {
    rx = msg;
    msg_rx_reset(rx);
-   rx->idx = rxIdx++;
+   rx->idx = rxIdx;
   } else {
     if( TRACE(TRACE_MSG) )
       tty_write_char('&');
   }
-  
+  rxIdx++;
 }
 
 void msg_rx_rssi( uint8_t rssi ) {
