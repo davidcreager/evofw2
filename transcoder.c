@@ -555,7 +555,7 @@ static void print_error( uint8_t error ) {
     case MSG_TIMEOUT:   tty_write_str("Timeout");           break;
     case MSG_SIG_ERR:   tty_write_str("Bad signature");     break;
     case MSG_TYPE_ERR:  tty_write_str("Bad Type");          break;
-    case MSG_MANC_ERR:  tty_write_str("Mancherter decode"); break;
+    case MSG_MANC_ERR:  tty_write_str("Manchester decode"); break;
     case MSG_CSUM_ERR:  tty_write_str("Checksum");          break;
     case MSG_LEN_ERR:   tty_write_str("Bad Length");        break;
     }   
@@ -594,7 +594,7 @@ void tc_print_message( struct message *msg ) {
 //  bytes -= print_param( msg->param[1], has_param1( flags ), flags2&F_PARAM1 );
   bytes -= print_addr( msg->addr[0], has_addr0( flags ), flags2&F_ADDR0 );
   bytes -= print_addr( msg->addr[1], has_addr1( flags ), flags2&F_ADDR1 );
-  bytes -= print_addr( msg->addr[2], has_addr2( flags ), flags2&F_ADDR0 );
+  bytes -= print_addr( msg->addr[2], has_addr2( flags ), flags2&F_ADDR2 );
   bytes -= print_opcode( msg->opcode, flags2&F_OPCODE );
   bytes -= print_len( msg->len );
   bytes -= print_payload( msg->payload, msg->len );
