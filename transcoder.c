@@ -315,7 +315,7 @@ void transcoder_accept_outbound_byte(uint8_t b) {
   static uint16_t msgLen = 0;
   static char buff[12];
 
-tty_write_char(b);
+//tty_write_char(b);
 
   if (b == '\n' || b == '\r') {
 tty_write_char('\n');
