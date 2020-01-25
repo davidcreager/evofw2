@@ -67,7 +67,7 @@ static uint8_t man_decode[16] = {
 };
 
 static inline int manchester_code_valid( uint8_t code ) { 
- return ( man_decode[(code>>4)&0xF]!=0xFF ) && ( man_decode[(code   )&0xF]!=0xFF ) ; 
+ return ( man_decode[(code>>4)&0xF]!=0xF ) && ( man_decode[(code   )&0xF]!=0xF ) ; 
 }
 
 static inline uint8_t manchester_decode( uint8_t byte1, uint8_t byte2 ) {
