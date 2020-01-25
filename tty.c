@@ -92,7 +92,7 @@ void tty_write_char(char c) {
   }
 }
 
-void tty_write_str(char *s) {
+void tty_write_str(char const *s) {
   while (*s) tty_write_char(*s++);
 }
 
