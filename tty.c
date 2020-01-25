@@ -2,6 +2,7 @@
 #include <avr/io.h>
 
 #include "config.h"
+#include "trace.h"
 #include "ringbuf.h"
 #include "tty.h"
 #include "led.h"
@@ -75,11 +76,61 @@ void tty_init(outbound_byte_fn o) {
   UCSR0B = (1 << RXCIE0) | (1 << RXEN0) | (1 << TXEN0);
 }
 
+#define CMD_CHAR '!'
+static uint8_t doCmd = 0;
+
+static struct command {
+  uint8_t cmd;
+  void (*func)(uint8_t len, uint8_t *param );
+} commands[] = {
+  { 'T', trace_cmd },
+  {'\0', 0 }
+};
+
+static void cmd_byte( uint8_t b ) {
+  static uint8_t cmd = '\0';
+  static uint8_t len = 0;
+  static uint8_t param[8];
+
+  if( cmd=='\0' ) {
+    if( b!='\r' && b!='\n' )
+      cmd = b;
+  } else {
+    if( b=='\r' ) {
+      struct command *command = commands;
+
+      while( ( command->cmd != cmd ) && ( command->cmd != '\0' ) ) 
+        command++;
+    
+      if( command->func )
+        ( command->func )( len,param );
+    
+      cmd = '\0';
+      len = 0;
+    } else {
+      if( len<sizeof(param) )
+        param[len++] = b;
+    }
+  }
+  
+  tty_write_char(b);
+  if( b=='\r' )
+    tty_write_char('\n');
+}
+
 void tty_work(void) {
   if( !rb_empty(&RX.rb) ) {
     led_toggle();
     uint8_t b = rb_get(&RX.rb);
-    outbound_byte(b);
+    if( b==CMD_CHAR )
+    {
+      doCmd = 1;
+      tty_write_char(b);
+    }
+    else if( doCmd )
+      cmd_byte(b);
+    else
+      outbound_byte(b);
   }
 }
 

@@ -16,4 +16,5 @@ extern uint8_t trace0;
 
 #define TRACE( _t) ( trace0 & (_t) )
 
+extern void trace_cmd(uint8_t len, uint8_t *param);
 #endif // _TRACE_H_
