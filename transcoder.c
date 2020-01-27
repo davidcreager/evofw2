@@ -539,6 +539,10 @@ static uint8_t print_len( uint8_t len ) {
 static uint8_t print_payload( uint8_t *payload, uint8_t len ) {
   uint8_t n = 0;
   tty_write_char(' ');
+
+  if( len > MAX_PAYLOAD )
+    len = MAX_PAYLOAD;
+
   while( len ) {
     tty_write_hex( *payload );
 	  payload++;

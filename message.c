@@ -233,7 +233,7 @@ void msg_rx_eof(void) {
 }
 
 void msg_rx_byte(uint8_t byte) {
-  uint8_t decoded,flags;
+  uint8_t decoded,temp;
 
   if( !rx )
     return;
@@ -295,14 +295,14 @@ void msg_rx_byte(uint8_t byte) {
 
   switch( rx->state ) {
   case S_HEADER:
-    flags = get_hdr_flags(decoded);
-    if( flags==0 ) {
+    temp = get_hdr_flags(decoded);
+    if( temp==0 ) {
       rx->state = S_ERROR;
       rx->error = MSG_TYPE_ERR;
       return;
     }
 
-    rx->flags |= flags;
+    rx->flags |= temp;
     if( hdr_param0(decoded) )set_param0( &rx->flags );
     if( hdr_param1(decoded) )set_param1( &rx->flags );
 
@@ -382,17 +382,19 @@ void msg_rx_byte(uint8_t byte) {
 	  break;
 
   case S_LEN:
-    rx->len = decoded;
-
+    temp = rx->len = decoded;
+    if( rx->len > MAX_PAYLOAD )
+      temp = MAX_PAYLOAD;
+      
 	  // Update the message length to include payload, csum and trailer
-	  bs_rx_msgLen( sizeof(evo_hdr) + 2*( header_length(rx) + rx->len + sizeof(rx->csum) ) + sizeof(evo_tlr) );
+	  bs_rx_msgLen( sizeof(evo_hdr) + 2*( header_length(rx) + temp + sizeof(rx->csum) ) + sizeof(evo_tlr) );
     
 	  rx->state = S_PAYLOAD;
     break;
 	
   case S_PAYLOAD:
     rx->payload[rx->nBytes++] = decoded;
-	  if( rx->nBytes==rx->len ) {
+	  if( (rx->nBytes==rx->len) || (rx->nBytes==MAX_PAYLOAD) ) {
       rx->state = S_CHECKSUM;
       rx->nBytes=0;
 	  }
