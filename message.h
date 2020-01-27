@@ -63,9 +63,12 @@ struct message {
   uint8_t bytes;
   uint8_t error;
   
-  uint8_t  state;
-  uint8_t  nBytes;
-  uint8_t  last;
+  uint8_t bsStart;
+  uint8_t bsFinish;
+  
+  uint8_t state;
+  uint8_t nBytes;
+  uint8_t last;
   
   uint8_t addr[3][3];
   uint8_t param[2];
@@ -81,14 +84,17 @@ struct message {
 
 extern void msg_init(void);
 
-extern void msg_rx_sof(void);
+extern void msg_rx_sof(uint8_t start);
 extern void msg_rx_byte(uint8_t byte);
-extern void msg_rx_eof(void);
+extern void msg_rx_eof(uint8_t finish);
 extern void msg_rx_rssi( uint8_t rssi );
 extern void msg_rx_timeout(void);
+
+extern void msg_rx_raw(struct message *msg);
 extern void msg_rx_done(struct message *msg);
 
 extern uint8_t msg_tx_byte(void);
+
 
 #endif  // _MESSAGE_H_
 

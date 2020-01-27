@@ -589,9 +589,11 @@ void tc_print_message( struct message *msg ) {
     tty_write_char(':');tty_write_hex( msg->bytes );
     tty_write_char(':');tty_write_hex( msg->error );
     tty_write_str("\r\n");
+    
+    if( msg->error==MSG_MANC_ERR )
+      msg_rx_raw( msg );
   }
-  
-  
+
   print_rssi( msg->rssi, has_rssi(flags) );
   bytes -= print_pkt( pkt_type( flags ), flags2&F_TYPE );  
   bytes -= print_param( msg->param[0], has_param0( flags ), flags2&F_PARAM0 );

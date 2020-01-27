@@ -183,12 +183,16 @@ static uint8_t msgOut=0;
 static struct message *rx = NULL;
 uint8_t rxIdx = 0;
 
+void msg_rx_raw( struct message *msg ) {
+  bs_rx_raw( msg->bsStart,msg->bsFinish);
+}
+
 void msg_rx_done( struct message *msg ) {
   msgList[msgIn++] = msg;
   msgIn %= 4;
 }
 
-void msg_rx_sof(void) {
+void msg_rx_sof(uint8_t start) {
   struct message *msg = NULL;
   if( msgIn != msgOut ) {
     msg = msgList[msgOut++];
@@ -198,6 +202,7 @@ void msg_rx_sof(void) {
    rx = msg;
    msg_rx_reset(rx);
    rx->idx = rxIdx;
+   rx->bsStart = start;
   } else {
     if( TRACE(TRACE_MSG) )
       tty_write_char('&');
@@ -222,8 +227,9 @@ void msg_rx_timeout(void) {
   }
 }
 
-void msg_rx_eof(void) {
+void msg_rx_eof(uint8_t finish) {
   if( rx ) {
+    rx->bsFinish = finish;
     if( (rx->state != S_ERROR) || TRACE(TRC_ERROR) )
       transcoder_rx_frame( rx );
     else

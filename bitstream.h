@@ -21,6 +21,7 @@ extern void bs_rx_timeout(void);
 extern void bs_rx_eof(void);
 extern void bs_rx_octet(uint8_t octet);
 extern void bs_rx_msgLen(uint8_t bytes);
+extern void bs_rx_raw( uint8_t start, uint8_t finish );
 
 /**************************************************************************
 * TX bitstream

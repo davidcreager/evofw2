@@ -97,6 +97,28 @@ struct bs_frame {
 };
 
 /**************************************************************************
+* Raw octet trace
+*/
+static uint8_t rxOctet[256];
+static uint8_t rxIn = 0;
+static uint8_t rxOut = 0;
+
+void bs_rx_raw( uint8_t start, uint8_t finish ) {
+
+  if( start != finish ) {
+    finish -= 1;
+  }
+
+  while( start!=finish ) {
+    tty_write_char('.');
+    start = ( start+1 ) % sizeof(rxOctet);
+    tty_write_hex( rxOctet[start] );
+    if( start==finish )
+      tty_write_str("\r\n");
+  }
+    
+}
+/**************************************************************************
 * convert message bytes to packet octets
 */
 static uint16_t bytes2octets(uint8_t bytes) {
@@ -125,7 +147,7 @@ static inline void rxData(void) { msg_rx_byte(rx.sr.data); rx.nBytes++; }
 void bs_rx_sof(void) {
 //tty_write_char('(');
   bs_rx_reset();
-  msg_rx_sof();
+  msg_rx_sof(rxOut);
 }
 
 void bs_rx_rssi(uint8_t rssi){
@@ -138,13 +160,19 @@ void bs_rx_timeout(void) {
 
 void bs_rx_eof(void) {
   bs_rx_octet( 0xAA );	// Flush any outstanding bits
-  msg_rx_eof();
+  msg_rx_eof(rxOut);
 //tty_write_char(')');
 }
 
 void bs_rx_octet(uint8_t octet)
 {
   rx.sr.bits = octet;
+
+  rxOctet[rxOut] = octet;
+  rxOut = ( rxOut+1 ) % sizeof(rxOctet);
+  if( rxOut==rxIn )
+    rxIn = ( rxIn+1 ) % sizeof(rxOctet);
+    
 //  tty_write_char('.');
 
   if( rx.nOctets==0 ) { // first octet - deal with alignment
