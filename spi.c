@@ -58,7 +58,7 @@ void spi_assert(void) {
 }
 
 uint8_t spi_check_miso(void) {
-  return ( SPI_PORT & (1 << SPI_MISO) );
+  return ( SPI_PIN & (1 << SPI_MISO) );
 }
 
 uint8_t spi_send(uint8_t data) {
@@ -70,9 +70,9 @@ uint8_t spi_send(uint8_t data) {
 uint8_t spi_strobe(uint8_t b) {
   uint8_t result;
   spi_assert();
-  while (SPI_PORT & (1 << SPI_MISO));
+  while( spi_check_miso() );
   result = spi_send(b);
-  while (SPI_PORT & (1 << SPI_MISO));
+  while( spi_check_miso() );
   spi_deassert();
   return result;
 }

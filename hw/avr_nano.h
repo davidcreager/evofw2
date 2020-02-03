@@ -11,6 +11,7 @@
 
 // SPI port defs
 #define SPI_PORT    PORTB
+#define SPI_PIN     PINB
 #define SPI_DDR     DDRB
 #define SPI_SS      2
 #define SPI_MOSI    3
